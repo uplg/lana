@@ -44,7 +44,8 @@ use tracing_subscriber::EnvFilter;
 const DEFAULT_SYSTEM_PROMPT: &str = "Tu es Lana, une assistante vocale \
     locale et amicale. Réponds TOUJOURS en français, jamais en anglais, \
     de façon concise et naturelle à l'oral : pas de markdown, pas de \
-    listes, pas d'astérisques, pas de blocs de code. /no_think";
+    listes, pas d'astérisques, pas de blocs de code. Tutoie toujours \
+    l'utilisateur, ne le vouvoie jamais.";
 
 #[tokio::main]
 async fn main() -> Result<()> {
@@ -133,23 +134,43 @@ const DEFAULT_FRENCH_ESTELLE_EMBEDDING: &str = "hf://kyutai/pocket-tts-without-v
 /// - `LANA_TTS_CLONE_WAV`: path to a reference WAV to clone (needs the
 ///   voice-cloning checkpoint).
 /// - none set: defaults to the real French Estelle embedding.
+///
+/// `LANA_TTS_EOS_THRESHOLD` (a float) overrides the end-of-speech
+/// threshold: more negative = the model keeps speaking longer before it
+/// may stop, which reduces sentences being cut off early.
 fn tts_config_from_env() -> TtsConfig {
-    if let Ok(embedding) = std::env::var("LANA_TTS_VOICE_EMBEDDING") {
-        info!(embedding = %embedding, "TTS voice from LANA_TTS_VOICE_EMBEDDING");
-        return TtsConfig::new(VoiceSource::KyutaiEmbedding(embedding));
+    let voice = std::env::var("LANA_TTS_VOICE_EMBEDDING")
+        .ok()
+        .map(|embedding| {
+            info!(embedding = %embedding, "TTS voice from LANA_TTS_VOICE_EMBEDDING");
+            VoiceSource::KyutaiEmbedding(embedding)
+        })
+        .or_else(|| {
+            std::env::var("LANA_TTS_VOICE_PROMPT").ok().map(|prompt| {
+                info!(prompt = %prompt, "TTS voice from LANA_TTS_VOICE_PROMPT");
+                VoiceSource::PromptFile(PathBuf::from(prompt))
+            })
+        })
+        .or_else(|| {
+            std::env::var("LANA_TTS_CLONE_WAV").ok().map(|wav| {
+                info!(reference = %wav, "TTS voice cloned from LANA_TTS_CLONE_WAV");
+                VoiceSource::CloneWav(PathBuf::from(wav))
+            })
+        })
+        .unwrap_or_else(|| {
+            info!(embedding = %DEFAULT_FRENCH_ESTELLE_EMBEDDING, "TTS voice: default French Estelle");
+            VoiceSource::KyutaiEmbedding(DEFAULT_FRENCH_ESTELLE_EMBEDDING.to_owned())
+        });
+
+    let mut config = TtsConfig::new(voice);
+    if let Some(eos) = std::env::var("LANA_TTS_EOS_THRESHOLD")
+        .ok()
+        .and_then(|v| v.parse::<f32>().ok())
+    {
+        info!(eos_threshold = eos, "TTS eos_threshold overridden");
+        config.eos_threshold = eos;
     }
-    if let Ok(prompt) = std::env::var("LANA_TTS_VOICE_PROMPT") {
-        info!(prompt = %prompt, "TTS voice from LANA_TTS_VOICE_PROMPT");
-        return TtsConfig::new(VoiceSource::PromptFile(PathBuf::from(prompt)));
-    }
-    if let Ok(wav) = std::env::var("LANA_TTS_CLONE_WAV") {
-        info!(reference = %wav, "TTS voice cloned from LANA_TTS_CLONE_WAV");
-        return TtsConfig::new(VoiceSource::CloneWav(PathBuf::from(wav)));
-    }
-    info!(embedding = %DEFAULT_FRENCH_ESTELLE_EMBEDDING, "TTS voice: default French Estelle");
-    TtsConfig::new(VoiceSource::KyutaiEmbedding(
-        DEFAULT_FRENCH_ESTELLE_EMBEDDING.to_owned(),
-    ))
+    config
 }
 
 async fn chat_repl(engine: &LlmEngine) -> Result<()> {

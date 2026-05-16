@@ -1,8 +1,11 @@
 # Lana
 
 Local-only conversational voice agent. You speak, Lana answers out loud, in
-French (primary) or English. A real-time lip-syncing 3D avatar is the next
-milestone. Nothing leaves the machine — no cloud, no telemetry, no Python.
+French (primary) or English. A real-time lip-syncing 3D avatar and local
+tool-calling (e.g. driving your own home API to switch the lights — still
+100 % local, just an HTTP call on your network) are planned milestones; see
+[PLAN.md](./PLAN.md) §8. Nothing leaves the machine — no cloud, no
+telemetry, no Python.
 
 Target hardware: MacBook Pro M1 Max 32 GB. The machine stays fully usable
 for other work while Lana runs (runtime footprint ≈ 2 GB).

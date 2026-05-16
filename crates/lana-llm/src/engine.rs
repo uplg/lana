@@ -14,7 +14,6 @@ use tokio::sync::mpsc;
 use tracing::{info, warn};
 
 use crate::error::LlmError;
-use crate::think_filter::ThinkFilter;
 use crate::token_stream::TokenOutputStream;
 
 const TOKEN_CHANNEL_CAPACITY: usize = 256;
@@ -306,7 +305,11 @@ fn run_completion(
         prompt.push_str(&msg.content);
         prompt.push_str("<|im_end|>\n");
     }
-    prompt.push_str("<|im_start|>assistant\n");
+    // Qwen3 "no-think": prefilling a closed empty think block (exactly what
+    // the official chat template does for `enable_thinking=false`) makes the
+    // model generate the answer directly — no `<think>` tags in the output,
+    // lower TTFT, and no risk of a think-stripper swallowing the reply.
+    prompt.push_str("<|im_start|>assistant\n<think>\n\n</think>\n\n");
 
     let encoded = match tokenizer.encode(prompt, true) {
         Ok(e) => e,
@@ -319,7 +322,6 @@ fn run_completion(
 
     let mut logits_processor = LogitsProcessor::from_sampling(params.seed, build_sampling(&params));
     let mut tos = TokenOutputStream::new(tokenizer);
-    let mut filter = ThinkFilter::new();
 
     let mut weights = model.lock();
     weights.clear_kv_cache();
@@ -352,11 +354,10 @@ fn run_completion(
 
     let mut generated: Vec<u32> = Vec::with_capacity(params.max_tokens);
     generated.push(next);
-    if !emit(&mut tos, &mut filter, next, tx) {
+    if !emit(&mut tos, next, tx) {
         return;
     }
     if next == eos_token {
-        flush_filter(&mut filter, tx);
         return;
     }
 
@@ -402,7 +403,7 @@ fn run_completion(
         };
         generated.push(next);
 
-        if !emit(&mut tos, &mut filter, next, tx) {
+        if !emit(&mut tos, next, tx) {
             return;
         }
         if next == eos_token {
@@ -411,24 +412,11 @@ fn run_completion(
     }
     drop(weights);
 
-    if let Ok(Some(rest)) = tos.decode_rest() {
-        let text = filter.push(&rest);
-        if !text.is_empty() {
-            let _ = tx.blocking_send(TokenChunk {
-                text,
-                is_final: false,
-            });
-        }
-    }
-    flush_filter(&mut filter, tx);
-}
-
-/// Flush whatever the think filter still holds and forward it downstream.
-fn flush_filter(filter: &mut ThinkFilter, tx: &mpsc::Sender<TokenChunk>) {
-    let tail = filter.flush();
-    if !tail.is_empty() {
+    if let Ok(Some(rest)) = tos.decode_rest()
+        && !rest.is_empty()
+    {
         let _ = tx.blocking_send(TokenChunk {
-            text: tail,
+            text: rest,
             is_final: false,
         });
     }
@@ -458,16 +446,10 @@ fn build_sampling(params: &GenerationConfig) -> Sampling {
     }
 }
 
-/// Detokenise one sampled token, run it through the think filter, and push
-/// the user-visible delta if any. Returns `false` if the downstream receiver
-/// has been dropped.
-fn emit(
-    tos: &mut TokenOutputStream<'_>,
-    filter: &mut ThinkFilter,
-    token: u32,
-    tx: &mpsc::Sender<TokenChunk>,
-) -> bool {
-    let raw = match tos.next_token(token) {
+/// Detokenise one sampled token and push the delta downstream. Returns
+/// `false` if the receiver has been dropped.
+fn emit(tos: &mut TokenOutputStream<'_>, token: u32, tx: &mpsc::Sender<TokenChunk>) -> bool {
+    let text = match tos.next_token(token) {
         Ok(Some(text)) => text,
         Ok(None) => return true,
         Err(e) => {
@@ -475,12 +457,11 @@ fn emit(
             return true;
         }
     };
-    let visible = filter.push(&raw);
-    if visible.is_empty() {
+    if text.is_empty() {
         return true;
     }
     tx.blocking_send(TokenChunk {
-        text: visible,
+        text,
         is_final: false,
     })
     .is_ok()

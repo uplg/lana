@@ -7,7 +7,6 @@
 
 mod engine;
 mod error;
-mod think_filter;
 mod token_stream;
 
 pub use engine::{EngineConfig, GenerationConfig, LlmEngine, Message, Role, TokenChunk};

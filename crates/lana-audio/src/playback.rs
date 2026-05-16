@@ -28,6 +28,15 @@ struct Shared {
     queue: VecDeque<f32>,
     /// Incremented on cancel; the feeder checks it to abort early.
     generation: u64,
+    /// Streaming-resampler continuity for [`AudioOutput::enqueue_pcm`].
+    /// Per-frame independent resampling left a discontinuity at every
+    /// frame seam (~80 ms) → audible crackle. We carry an integer phase
+    /// accumulator and the previous frame's last sample so consecutive
+    /// frames resample as one continuous stream.
+    rs_phase: u32,
+    rs_prev: f32,
+    /// Source rate the carried state applies to; a change resets it.
+    rs_src: u32,
 }
 
 /// Live audio output. One device/stream reused across utterances.
@@ -115,13 +124,58 @@ impl AudioOutput {
     /// Enqueue a raw mono f32 PCM frame (samples in `[-1, 1]`) sampled at
     /// `src_rate`, resampling to the device rate. Used for native streaming
     /// TTS: each Mimi frame is played as soon as it is produced.
+    ///
+    /// The resampler is *stateful across frames*: it carries the fractional
+    /// read position and the previous frame's last sample, so frame seams
+    /// no longer introduce the periodic discontinuity that crackled.
     pub fn enqueue_pcm(&self, samples: &[f32], src_rate: u32) {
         if samples.is_empty() {
             return;
         }
-        let resampled = linear_resample(samples, src_rate, self.device_rate);
-        let mut guard = self.shared.lock();
-        guard.queue.extend(resampled);
+        let device_rate = self.device_rate;
+        let last_sample = samples.last().copied().unwrap_or(0.0); // non-empty
+        let mut shared = self.shared.lock();
+
+        if src_rate != shared.rs_src {
+            // First use, or the source rate changed: (re)start continuity
+            // from this frame's first sample (no leading click).
+            shared.rs_src = src_rate;
+            shared.rs_phase = 0;
+            shared.rs_prev = samples[0];
+        }
+
+        if src_rate == device_rate {
+            shared.queue.extend(samples.iter().copied());
+            shared.rs_prev = last_sample;
+            return;
+        }
+
+        // Continuous linear resample via an integer phase accumulator.
+        // Between two consecutive input samples `prev` and `cur`, an output
+        // lands at fractional position `phase / device_rate`; advancing the
+        // phase by `src_rate` per output and consuming one input sample
+        // every `device_rate` keeps the rational ratio exact. Carrying
+        // `phase` and `prev` across calls makes frame seams continuous.
+        let mut phase = shared.rs_phase;
+        let mut prev = shared.rs_prev;
+        let mut out = Vec::new();
+        for &cur in samples {
+            while phase < device_rate {
+                // `phase` < `device_rate` ≤ 192 kHz: exact in f32.
+                #[expect(
+                    clippy::cast_precision_loss,
+                    reason = "phase < device_rate ≤ 192 kHz is exact in f32"
+                )]
+                let frac = phase as f32 / device_rate as f32;
+                out.push((cur - prev).mul_add(frac, prev));
+                phase = phase.saturating_add(src_rate);
+            }
+            phase = phase.saturating_sub(device_rate);
+            prev = cur;
+        }
+        shared.rs_phase = phase;
+        shared.rs_prev = last_sample;
+        shared.queue.extend(out);
     }
 
     /// Stop the current utterance immediately (barge-in): drop everything
@@ -130,6 +184,10 @@ impl AudioOutput {
         let mut guard = self.shared.lock();
         guard.queue.clear();
         guard.generation = guard.generation.wrapping_add(1);
+        // Next utterance is unrelated audio: restart resampler continuity.
+        guard.rs_phase = 0;
+        guard.rs_prev = 0.0;
+        guard.rs_src = 0;
     }
 
     /// `true` while there is still audio queued to play.

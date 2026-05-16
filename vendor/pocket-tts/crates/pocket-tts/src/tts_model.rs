@@ -783,35 +783,53 @@ impl TTSModel {
                 .count_tokens(sentence)
                 .unwrap_or(MAX_TOKENS_PER_CHUNK);
 
-            // If a single sentence exceeds max tokens, split it by words
+            // #143: a single sentence over the budget. Sub-split it on
+            // clause punctuation (commas) so cuts land at natural
+            // boundaries instead of mid-clause word batches, which made
+            // the model skip words. Word-batching stays as the last
+            // resort for clauses with no usable comma.
             if sentence_tokens > MAX_TOKENS_PER_CHUNK {
-                // Flush pending chunk first
                 if !current_chunk.is_empty() {
                     chunks.push(current_chunk);
                     current_chunk = String::new();
                     current_token_count = 0;
                 }
 
-                // Split long sentence using word-batch estimation (~1.3 tokens per word average)
-                // This avoids calling count_tokens for every word (expensive!)
-                let words: Vec<&str> = sentence.split_whitespace().collect();
-                const WORDS_PER_BATCH: usize = 35; // ~45 tokens, safe margin under 50
+                let clauses: Vec<&str> = sentence
+                    .split_inclusive(',')
+                    .map(str::trim)
+                    .filter(|s| !s.is_empty())
+                    .collect();
 
-                for word_batch in words.chunks(WORDS_PER_BATCH) {
-                    let chunk_str = word_batch.join(" ");
-                    // Verify this batch is actually under limit (should almost always pass)
-                    let actual_tokens = self
+                if clauses.len() < 2 {
+                    chunks.extend(self.word_batch_chunks(sentence, MAX_TOKENS_PER_CHUNK));
+                    continue;
+                }
+
+                for clause in clauses {
+                    let clause_tokens = self
                         .conditioner
-                        .count_tokens(&chunk_str)
+                        .count_tokens(clause)
                         .unwrap_or(MAX_TOKENS_PER_CHUNK);
 
-                    if actual_tokens <= MAX_TOKENS_PER_CHUNK {
-                        chunks.push(chunk_str);
+                    if clause_tokens > MAX_TOKENS_PER_CHUNK {
+                        if !current_chunk.is_empty() {
+                            chunks.push(current_chunk);
+                            current_chunk = String::new();
+                            current_token_count = 0;
+                        }
+                        chunks.extend(self.word_batch_chunks(clause, MAX_TOKENS_PER_CHUNK));
+                    } else if current_chunk.is_empty() {
+                        current_chunk = clause.to_string();
+                        current_token_count = clause_tokens;
+                    } else if current_token_count + clause_tokens > MAX_TOKENS_PER_CHUNK {
+                        chunks.push(current_chunk);
+                        current_chunk = clause.to_string();
+                        current_token_count = clause_tokens;
                     } else {
-                        // Rare case: batch still too big, split in half recursively
-                        let mid = word_batch.len() / 2;
-                        chunks.push(word_batch[..mid].join(" "));
-                        chunks.push(word_batch[mid..].join(" "));
+                        current_chunk.push(' ');
+                        current_chunk.push_str(clause);
+                        current_token_count += clause_tokens;
                     }
                 }
                 continue;
@@ -837,6 +855,27 @@ impl TTSModel {
         }
 
         chunks
+    }
+
+    /// Last-resort split for a clause/sentence with no usable comma:
+    /// fixed-size word batches kept under `max` tokens (a batch still over
+    /// budget is halved once). Mirrors the pre-#143 fallback.
+    fn word_batch_chunks(&self, sentence: &str, max: usize) -> Vec<String> {
+        const WORDS_PER_BATCH: usize = 35; // ~45 tokens, safe margin under 50
+        let words: Vec<&str> = sentence.split_whitespace().collect();
+        let mut out = Vec::new();
+        for word_batch in words.chunks(WORDS_PER_BATCH) {
+            let chunk_str = word_batch.join(" ");
+            let actual = self.conditioner.count_tokens(&chunk_str).unwrap_or(max);
+            if actual <= max {
+                out.push(chunk_str);
+            } else {
+                let mid = word_batch.len() / 2;
+                out.push(word_batch[..mid].join(" "));
+                out.push(word_batch[mid..].join(" "));
+            }
+        }
+        out
     }
 
     /// Generate audio from text with voice state
