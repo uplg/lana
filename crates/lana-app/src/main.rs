@@ -20,7 +20,7 @@ use std::time::{Duration, Instant};
 
 use anyhow::{Context, Result, bail};
 use lana_audio::{AudioOutput, MicCapture};
-use lana_llm::{EngineConfig, GenerationConfig, LlmEngine};
+use lana_llm::{EngineConfig, GenerationConfig, LlmEngine, Message};
 use lana_orchestrator::{Orchestrator, OrchestratorConfig, OrchestratorEvent, Phase};
 use lana_stt::{SttConfig, SttEngine};
 use lana_tts::{TtsConfig, TtsEngine, VoiceSource};
@@ -81,7 +81,12 @@ async fn main() -> Result<()> {
 }
 
 fn init_tracing() {
-    let filter = EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new("info"));
+    // Default (no RUST_LOG): keep Lana's own INFO but silence the very
+    // chatty ONNX Runtime memory/arena logs (bridged by `ort` under the
+    // `ort::*` target) and hf-hub download chatter. An explicit RUST_LOG
+    // still wins.
+    let filter = EnvFilter::try_from_default_env()
+        .unwrap_or_else(|_| EnvFilter::new("info,ort=warn,hf_hub=warn"));
     tracing_subscriber::fmt()
         .with_env_filter(filter)
         .with_target(false)
@@ -156,6 +161,8 @@ async fn chat_repl(engine: &LlmEngine) -> Result<()> {
         .write_all(b"\nLana ready. Type a prompt and press enter (Ctrl-D to quit).\n")
         .await?;
 
+    let mut history: Vec<Message> = Vec::new();
+
     loop {
         stdout.write_all(b"\n> ").await?;
         stdout.flush().await?;
@@ -169,16 +176,23 @@ async fn chat_repl(engine: &LlmEngine) -> Result<()> {
             continue;
         }
 
-        chat_turn(engine, prompt, &mut stdout).await?;
+        chat_turn(engine, prompt, &mut stdout, &mut history).await?;
     }
 }
 
-async fn chat_turn(engine: &LlmEngine, prompt: &str, stdout: &mut tokio::io::Stdout) -> Result<()> {
+async fn chat_turn(
+    engine: &LlmEngine,
+    prompt: &str,
+    stdout: &mut tokio::io::Stdout,
+    history: &mut Vec<Message>,
+) -> Result<()> {
     let started = Instant::now();
-    let mut rx = engine.stream(prompt);
+    history.push(Message::user(prompt));
+    let mut rx = engine.stream(history);
 
     let mut ttft: Option<Duration> = None;
     let mut output_chars: usize = 0;
+    let mut reply = String::new();
 
     while let Some(chunk) = rx.recv().await {
         if chunk.is_final {
@@ -190,6 +204,12 @@ async fn chat_turn(engine: &LlmEngine, prompt: &str, stdout: &mut tokio::io::Std
         stdout.write_all(chunk.text.as_bytes()).await?;
         stdout.flush().await?;
         output_chars = output_chars.saturating_add(chunk.text.len());
+        reply.push_str(&chunk.text);
+    }
+
+    let reply = reply.trim();
+    if !reply.is_empty() {
+        history.push(Message::assistant(reply));
     }
 
     let elapsed = started.elapsed();

@@ -305,6 +305,15 @@ impl Orchestrator {
             emit(events, OrchestratorEvent::Notice("empty reply".to_owned())).await;
             return TurnEnd::Completed;
         }
+
+        // Record Lana's reply (even if playback is later interrupted: she
+        // did "say" it textually) and bound the running history.
+        history.push(Message::assistant(full.clone()));
+        let overflow = history.len().saturating_sub(MAX_HISTORY_MSGS);
+        if overflow > 0 {
+            history.drain(0..overflow);
+        }
+
         emit(events, OrchestratorEvent::LanaSaid(full)).await;
 
         if cfg.allow_bargein {
