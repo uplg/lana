@@ -1,0 +1,24 @@
+[package]
+name = "lana-orchestrator"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+authors.workspace = true
+license.workspace = true
+repository.workspace = true
+publish.workspace = true
+description = "Conversational state machine wiring mic → VAD → STT → LLM → TTS for Lana."
+
+[lints]
+workspace = true
+
+[dependencies]
+thiserror.workspace = true
+tracing.workspace = true
+tokio = { workspace = true, features = ["sync", "rt", "macros", "time"] }
+
+lana-audio.workspace = true
+lana-vad.workspace = true
+lana-stt.workspace = true
+lana-llm.workspace = true
+lana-tts.workspace = true

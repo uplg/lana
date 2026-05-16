@@ -1,0 +1,21 @@
+[package]
+name = "lana-stt"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+authors.workspace = true
+license.workspace = true
+repository.workspace = true
+publish.workspace = true
+description = "Speech-to-text via Parakeet-TDT-0.6B-v3 (parakeet-rs / ONNX, pure Rust) for Lana."
+
+[lints]
+workspace = true
+
+[dependencies]
+thiserror.workspace = true
+tracing.workspace = true
+tokio = { workspace = true, features = ["sync", "rt"] }
+parking_lot.workspace = true
+
+parakeet-rs.workspace = true

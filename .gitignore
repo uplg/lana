@@ -1,0 +1,45 @@
+# Rust
+/target/
+/vendor/**/target/
+/vendor/**/Cargo.lock
+**/*.rs.bk
+*.pdb
+Cargo.lock.bak
+
+# IDE / editor
+.idea/
+.vscode/
+*.swp
+*.swo
+*~
+.DS_Store
+
+# Local env / secrets
+.env
+.env.local
+*.local
+
+# Model cache (downloaded at first run)
+/assets/models/*.gguf
+/assets/models/*.mlmodelc/
+/assets/models/*.onnx
+/assets/models/*.bin
+/assets/models/*.safetensors
+/assets/models/**/weights.bin
+!/assets/models/.gitkeep
+
+# Build artifacts from Swift bridge
+**/SwiftPackage/.build/
+**/SwiftPackage/Package.resolved
+**/generated/
+*.dylib
+*.a
+*.o
+
+# Logs
+*.log
+logs/
+
+# OS
+Thumbs.db
+ehthumbs.db

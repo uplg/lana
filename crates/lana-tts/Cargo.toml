@@ -1,0 +1,26 @@
+[package]
+name = "lana-tts"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+authors.workspace = true
+license.workspace = true
+repository.workspace = true
+publish.workspace = true
+description = "Text-to-speech via native Rust Kyutai Pocket TTS (candle/Metal) for Lana."
+
+[lints]
+workspace = true
+
+[dependencies]
+thiserror.workspace = true
+tracing.workspace = true
+tokio = { workspace = true, features = ["sync", "rt"] }
+parking_lot.workspace = true
+
+# pocket-tts pins candle 0.9.x; we must build the Metal `Device` with the
+# *same* candle version so the tensor types line up (the workspace default
+# candle is 0.10, used by lana-llm — the two coexist, deny only warns on
+# the duplicate).
+pocket-tts = { workspace = true, features = ["metal"] }
+candle-core = { version = "0.9.1", features = ["metal"] }

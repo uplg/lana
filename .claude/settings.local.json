@@ -1,0 +1,33 @@
+{
+  "permissions": {
+    "allow": [
+      "WebSearch",
+      "Bash(rtk ls *)",
+      "Bash(rtk git *)",
+      "Bash(git init *)",
+      "Bash(git --version)",
+      "Bash(rustc --version)",
+      "Bash(cargo info *)",
+      "Bash(cargo search *)",
+      "Bash(rtk curl *)",
+      "Bash(python3 -c \"import json,sys; d=json.load\\(sys.stdin\\); print\\('latest:', d['crate']['max_version']\\); print\\('stable:', d['crate']['max_stable_version']\\)\")",
+      "Bash(curl -sS https://crates.io/api/v1/crates/ort)",
+      "Bash(curl -sS https://crates.io/api/v1/crates/bevy_egui)",
+      "Bash(curl -sS https://crates.io/api/v1/crates/bevy_vrm)",
+      "Bash(curl -sS https://crates.io/api/v1/crates/bevy_egui/0.39.1/dependencies)",
+      "Bash(python3 -c \"import json,sys; d=json.load\\(sys.stdin\\); [print\\(x['crate_id'], x['req']\\) for x in d['dependencies'] if 'bevy' in x['crate_id']]\")",
+      "Bash(curl -sS https://crates.io/api/v1/crates/bevy_vrm/0.3.0/dependencies)",
+      "Bash(rtk cargo *)",
+      "Bash(cargo deny *)",
+      "WebFetch(domain:github.com)",
+      "WebFetch(domain:docs.rs)",
+      "WebFetch(domain:raw.githubusercontent.com)",
+      "Bash(rtk gh *)",
+      "Bash(python3 -c \"import json,sys; [print\\(x['name']\\) for x in json.load\\(sys.stdin\\)]\")",
+      "Bash(gh api *)",
+      "Bash(cargo clippy *)",
+      "Bash(cargo test *)",
+      "Bash(cargo fmt *)"
+    ]
+  }
+}

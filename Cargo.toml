@@ -1,0 +1,153 @@
+[workspace]
+resolver = "3"
+members = [
+    "crates/lana-audio",
+    "crates/lana-vad",
+    "crates/lana-stt",
+    "crates/lana-llm",
+    "crates/lana-tts",
+    "crates/lana-viseme",
+    "crates/lana-avatar",
+    "crates/lana-ui",
+    "crates/lana-orchestrator",
+    "crates/lana-app",
+]
+# `vendor/pocket-tts` is itself a Cargo workspace (we patch it heavily to
+# bring it to Kyutai upstream parity). Exclude it so our workspace does not
+# try to absorb its members; we depend on its `pocket-tts` lib via a path.
+exclude = ["vendor"]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.85"
+authors = ["Leonard Cherouvrier <leonard.cherouvrier@ezako.com>"]
+license = "MIT OR Apache-2.0"
+repository = "https://github.com/leonard/lana"
+publish = false
+
+[workspace.lints.rust]
+unsafe_op_in_unsafe_fn = "deny"
+unreachable_pub = "warn"
+missing_debug_implementations = "warn"
+missing_copy_implementations = "warn"
+trivial_casts = "warn"
+trivial_numeric_casts = "warn"
+unused_lifetimes = "warn"
+unused_qualifications = "warn"
+single_use_lifetimes = "warn"
+
+[workspace.lints.clippy]
+pedantic = { level = "warn", priority = -1 }
+nursery = { level = "warn", priority = -1 }
+unwrap_used = "deny"
+expect_used = "warn"
+panic = "deny"
+arithmetic_side_effects = "warn"
+todo = "warn"
+unimplemented = "warn"
+dbg_macro = "deny"
+print_stdout = "warn"
+print_stderr = "warn"
+unwrap_in_result = "warn"
+exit = "deny"
+allow_attributes = "warn"
+allow_attributes_without_reason = "warn"
+module_name_repetitions = "allow"
+must_use_candidate = "allow"
+missing_errors_doc = "allow"
+missing_panics_doc = "allow"
+# We use pub(crate) deliberately to encode visibility intent across modules;
+# this lint conflicts with rustc's `unreachable_pub` when a parent module is
+# private. Keeping `pub(crate)` is the semantically meaningful choice.
+redundant_pub_crate = "allow"
+
+[workspace.dependencies]
+# Async runtime
+tokio = { version = "1.52", features = ["rt-multi-thread", "macros", "sync", "signal", "time", "io-util"] }
+tokio-util = { version = "0.7.18", features = ["rt"] }
+futures = "0.3.32"
+
+# Error handling & types
+thiserror = "2.0"
+anyhow = "1.0"
+
+# Logging / tracing
+tracing = "0.1.44"
+tracing-subscriber = { version = "0.3.23", features = ["env-filter", "fmt"] }
+
+# Serialization
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+
+# Audio I/O
+cpal = "0.17"
+bytes = "1.11"
+crossbeam-channel = "0.5"
+hound = "3.5.1"
+
+# DSP / FFT
+rustfft = "6.4"
+
+# Numerics
+num-traits = "0.2"
+
+# Voice activity detection (pure Rust, no ONNX/Swift)
+earshot = "1"
+
+# Speech-to-text: Parakeet-TDT-0.6B-v3 via ONNX Runtime (pure Rust, no
+# Swift). Model ONNX files from HF `istupakov/parakeet-tdt-0.6b-v3-onnx`.
+parakeet-rs = "0.3"
+
+# LLM inference (candle, pure Rust, Metal-accelerated)
+candle-core = { version = "0.10", default-features = false }
+candle-nn = { version = "0.10", default-features = false }
+candle-transformers = { version = "0.10", default-features = false }
+tokenizers = { version = "0.22", default-features = false, features = ["onig"] }
+hf-hub = "0.4"
+parking_lot = "0.12"
+
+# Apple MLX bindings (Kyutai Pocket TTS)
+mlx-rs = "0.25"
+
+# TTS: native Rust port of Kyutai Pocket TTS on candle (Metal). Gives the
+# real Kyutai voices (Estelle via a .safetensors voice prompt), working
+# native voice cloning, and a true streaming pipeline. Git-only; pinned by
+# commit.
+pocket-tts = { path = "vendor/pocket-tts/crates/pocket-tts", version = "0.6", default-features = false }
+
+# Avatar / rendering
+bevy = { version = "0.18", default-features = false }
+bevy_egui = "0.39"
+bevy_vrm = "0.3"
+
+# Internal crates (path + version to avoid wildcard dependencies flagged by cargo-deny)
+lana-audio        = { path = "crates/lana-audio",        version = "0.1.0" }
+lana-vad          = { path = "crates/lana-vad",          version = "0.1.0" }
+lana-stt          = { path = "crates/lana-stt",          version = "0.1.0" }
+lana-llm          = { path = "crates/lana-llm",          version = "0.1.0" }
+lana-tts          = { path = "crates/lana-tts",          version = "0.1.0" }
+lana-viseme       = { path = "crates/lana-viseme",       version = "0.1.0" }
+lana-avatar       = { path = "crates/lana-avatar",       version = "0.1.0" }
+lana-ui           = { path = "crates/lana-ui",           version = "0.1.0" }
+lana-orchestrator = { path = "crates/lana-orchestrator", version = "0.1.0" }
+
+[profile.release]
+opt-level = 3
+lto = "fat"
+codegen-units = 1
+panic = "abort"
+strip = "symbols"
+overflow-checks = false
+incremental = false
+
+[profile.dev]
+opt-level = 1
+debug = "limited"
+incremental = true
+
+[profile.dev.package."*"]
+opt-level = 3
+
+[profile.test]
+opt-level = 1
