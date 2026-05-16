@@ -23,7 +23,7 @@ for other work while Lana runs (runtime footprint ≈ 2 GB).
 | TTS | Kyutai Pocket TTS, native Rust port (vendored `babybirdprd/pocket-tts` on `candle`/Metal), French `french_24l` + real **Estelle** voice |
 | Lip-sync | `lana-viseme`: short-time FFT energy + F1/F2 formants → vowel visemes, smoothed onto the avatar's mouth morphs — VRM via its `blendShapeMaster` a/i/u/e/o presets, glTF via morph-target name |
 | Avatar | Bevy 0.18 — native window, camera/light, idle sway, audio lip-sync. `LANA_AVATAR_PATH`: realistic `.glb`/`.gltf` (e.g. [Avaturn](https://avaturn.me)) or a `.vrm` (`bevy_vrm` 0.3) |
-| UI | `bevy_egui` 0.39 overlay — phase + rolling transcript |
+| UI | `bevy_egui` 0.39 overlay — phase, rolling transcript, mic-mute toggle |
 | Orchestrator | Tokio state machine: streaming TTS, conversation memory, barge-in |
 
 No Python. No Swift. No cloud. No telemetry.

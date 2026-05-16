@@ -27,6 +27,8 @@
 )]
 
 use std::path::PathBuf;
+use std::sync::Arc;
+use std::sync::atomic::AtomicBool;
 
 use bevy::gltf::GltfAssetLabel;
 use bevy::prelude::*;
@@ -65,6 +67,12 @@ pub enum AvatarUpdate {
 /// Channel end the Bevy app drains each frame.
 #[derive(Resource)]
 struct Updates(Receiver<AvatarUpdate>);
+
+/// User-side mic mute, shared with the orchestrator. The overlay button
+/// toggles it; when `true` the orchestrator discards mic input so Lana
+/// does not listen.
+#[derive(Resource, Clone)]
+struct MicMute(Arc<AtomicBool>);
 
 /// Authoritative viseme→morph-slot map read from a `.vrm`'s
 /// `blendShapeMaster` (present only for the VRM path; the glTF path
@@ -123,13 +131,18 @@ struct IdleAnimation {
 /// closes, and must be called on the process main thread.
 ///
 /// `avatar_path` is a `.glb`/`.gltf` (realistic) or `.vrm` model;
-/// `updates` streams conversation state in from the orchestrator thread.
+/// `updates` streams conversation state in from the orchestrator thread;
+/// `mute` is the shared mic-mute the overlay button toggles.
 ///
 /// # Errors
 ///
 /// Returns [`AvatarError::Vrm`] if the path does not exist or has an
 /// unsupported extension.
-pub fn run(avatar_path: PathBuf, updates: Receiver<AvatarUpdate>) -> Result<(), AvatarError> {
+pub fn run(
+    avatar_path: PathBuf,
+    updates: Receiver<AvatarUpdate>,
+    mute: Arc<AtomicBool>,
+) -> Result<(), AvatarError> {
     if !avatar_path.exists() {
         return Err(AvatarError::Vrm(format!(
             "avatar file not found: {} (set LANA_AVATAR_PATH to a .glb/.gltf \
@@ -210,6 +223,7 @@ pub fn run(avatar_path: PathBuf, updates: Receiver<AvatarUpdate>) -> Result<(), 
     }
     app.add_plugins(overlay::OverlayPlugin)
         .insert_resource(Updates(updates))
+        .insert_resource(MicMute(mute))
         .insert_resource(AvatarAsset {
             file,
             kind,

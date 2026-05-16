@@ -1,11 +1,13 @@
 //! Conversation overlay: drains [`AvatarUpdate`]s into a [`Transcript`]
 //! resource and renders it as a `bevy_egui` panel over the avatar.
 
+use std::sync::atomic::Ordering;
+
 use bevy::prelude::*;
 use bevy_egui::{EguiContexts, EguiPlugin, EguiPrimaryContextPass, egui};
 
 use crate::mouth::VisemeSchedule;
-use crate::{AvatarUpdate, Updates};
+use crate::{AvatarUpdate, MicMute, Updates};
 
 /// Most recent conversation lines kept for display.
 const MAX_LINES: usize = 12;
@@ -64,8 +66,12 @@ fn pump_updates(
     }
 }
 
-/// Draw the phase badge + rolling transcript as a bottom-anchored panel.
-fn render_overlay(mut contexts: EguiContexts, transcript: Res<Transcript>) -> Result {
+/// Draw the phase badge + mic-mute toggle + rolling transcript.
+fn render_overlay(
+    mut contexts: EguiContexts,
+    transcript: Res<Transcript>,
+    mute: Res<MicMute>,
+) -> Result {
     let ctx = contexts.ctx_mut()?;
     egui::TopBottomPanel::bottom("lana_transcript")
         .resizable(false)
@@ -80,6 +86,16 @@ fn render_overlay(mut contexts: EguiContexts, transcript: Res<Transcript>) -> Re
                             .italics(),
                     );
                 }
+                let muted = mute.0.load(Ordering::Relaxed);
+                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                    if muted {
+                        ui.colored_label(egui::Color32::from_rgb(0xE0, 0x50, 0x50), "● muted");
+                    }
+                    let label = if muted { "Unmute mic" } else { "Mute mic" };
+                    if ui.button(label).clicked() {
+                        mute.0.store(!muted, Ordering::Relaxed);
+                    }
+                });
             });
             ui.separator();
             egui::ScrollArea::vertical()

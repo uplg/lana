@@ -17,6 +17,8 @@
 #![forbid(unsafe_code)]
 
 use std::path::{Path, PathBuf};
+use std::sync::Arc;
+use std::sync::atomic::AtomicBool;
 use std::time::{Duration, Instant};
 
 use anyhow::{Context, Result, bail};
@@ -103,11 +105,16 @@ fn run_converse_windowed() -> Result<()> {
 
     let (av_tx, av_rx) = crossbeam_channel::unbounded::<AvatarUpdate>();
 
+    // User-side mic mute, shared between the overlay button (Bevy thread)
+    // and the orchestrator loop (side thread).
+    let mute = Arc::new(AtomicBool::new(false));
+    let mute_orch = Arc::clone(&mute);
+
     let _orchestrator = std::thread::Builder::new()
         .name("lana-orchestrator".to_owned())
         .spawn(move || {
             // Boxed: builds every engine inline, so the future is large.
-            if let Err(e) = block_on(Box::pin(run_converse(av_tx))) {
+            if let Err(e) = block_on(Box::pin(run_converse(av_tx, mute_orch))) {
                 tracing::error!(error = %e, "converse loop stopped");
             }
         })
@@ -115,7 +122,7 @@ fn run_converse_windowed() -> Result<()> {
 
     // Blocks until the window closes; the process then exits, ending the
     // orchestrator thread with it.
-    lana_avatar::run(avatar_path, av_rx).map_err(|e| anyhow::anyhow!("avatar: {e}"))
+    lana_avatar::run(avatar_path, av_rx, mute).map_err(|e| anyhow::anyhow!("avatar: {e}"))
 }
 
 fn init_tracing() {
@@ -384,7 +391,10 @@ async fn run_synth(text: &str, out: &Path) -> Result<()> {
 
 // ---- converse (phase 4: full voice loop) ----------------------------------
 
-async fn run_converse(av_tx: crossbeam_channel::Sender<AvatarUpdate>) -> Result<()> {
+async fn run_converse(
+    av_tx: crossbeam_channel::Sender<AvatarUpdate>,
+    mute: Arc<AtomicBool>,
+) -> Result<()> {
     info!("lana starting (converse — full voice loop)");
 
     // Build every engine first (each loads its own model). LLM, STT and
@@ -442,7 +452,7 @@ async fn run_converse(av_tx: crossbeam_channel::Sender<AvatarUpdate>) -> Result<
         orch_cfg.allow_bargein = true;
     }
     let orchestrator = Orchestrator::new(stt, llm, tts, vad, out);
-    let result = orchestrator.run(mic_rx, event_tx, orch_cfg).await;
+    let result = orchestrator.run(mic_rx, event_tx, orch_cfg, mute).await;
 
     drop(mic);
     printer.abort();

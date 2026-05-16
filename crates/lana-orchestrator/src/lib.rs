@@ -14,6 +14,8 @@
 
 mod error;
 
+use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::{Duration, Instant};
 
 use lana_audio::AudioOutput;
@@ -187,6 +189,7 @@ impl Orchestrator {
         mut mic: mpsc::Receiver<Vec<f32>>,
         events: mpsc::Sender<OrchestratorEvent>,
         config: OrchestratorConfig,
+        mute: Arc<AtomicBool>,
     ) -> Result<(), OrchestratorError> {
         let mut segmenter = UtteranceSegmenter::new(config.segmenter);
         let mut utterance: Vec<f32> = Vec::new();
@@ -196,6 +199,10 @@ impl Orchestrator {
         // A barge-in hands back the chunk that interrupted Lana; it seeds
         // the next utterance instead of being dropped.
         let mut seed: Option<Vec<f32>> = None;
+        // User-side mic mute (toggled from the avatar UI): discard input so
+        // Lana does not listen. Tracked so the segmenter/utterance is reset
+        // exactly on the mute edge, not every silent chunk.
+        let mut muted_prev = false;
 
         loop {
             let chunk = if let Some(seed_chunk) = seed.take() {
@@ -206,6 +213,22 @@ impl Orchestrator {
                     None => return Err(OrchestratorError::MicClosed),
                 }
             };
+
+            if mute.load(Ordering::Relaxed) {
+                if !muted_prev {
+                    muted_prev = true;
+                    // Drop any half-captured utterance so unmuting starts clean.
+                    segmenter.flush();
+                    utterance.clear();
+                    emit(&events, OrchestratorEvent::Notice("mic muted".to_owned())).await;
+                    emit(&events, OrchestratorEvent::Phase(Phase::Idle)).await;
+                }
+                continue; // keep draining the mic channel, but ignore input.
+            }
+            if muted_prev {
+                muted_prev = false;
+                emit(&events, OrchestratorEvent::Notice("mic unmuted".to_owned())).await;
+            }
 
             let voiced = self.vad.voice_active(chunk.clone()).await.unwrap_or(false);
 

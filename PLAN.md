@@ -169,7 +169,7 @@ thread (winit requirement), bridged by a crossbeam `AvatarUpdate` channel
 (stdout transcript kept too). *Not GUI-tested in CI — render verified by
 the user on-device (like the audio ear-check).*
 
-### 🚧 Phase 6 — Lip-sync (landed, instrumented; posture deferred)
+### ✅ Phase 6 — Lip-sync (confirmed on-device 2026-05-17)
 `lana-viseme` (pure-DSP, no Bevy dep, unit-tested): short-time Hann/FFT
 (rustfft) ~100 fps over the synthesised sentence PCM — per-frame RMS →
 mouth *openness*, F1/F2 spectral-peak guess → nearest of five vowel shapes
@@ -208,13 +208,17 @@ robust on the mirror-scaled rigs that broke the earlier rotation-based
 pose attempts) for a head-and-shoulders shot, so the unsolved bind-pose
 arms fall out of frame. This is the deliberate, deterministic choice over
 hand-posing an arbitrary VRM 0.0 skeleton (no VRMA in `bevy_vrm` 0.3, no
-humanoid normalization; bone math failed twice for real reasons). Tunable
-via `LANA_AVATAR_CAM_DIST` (default 0.55 m); glTF keeps the default camera
-and its embedded idle clip. Done: **idle blink** reusing the proven
-`blendShapeMaster` path (parse the `blink` preset; an irregular sine timer
-drives it crisply, un-smoothed). Idle sway/breathing retained.
-Still open: FR/EN voice picker, VRM hot-reload, gaze-at-camera. *Not
-GUI-tested in CI — verified on-device.*
+humanoid normalization; bone math failed twice for real reasons). Level
+(untilted) shot, tunable via `LANA_AVATAR_CAM_DIST` (1.15 m) and
+`LANA_AVATAR_CAM_HEIGHT` (0.08 m, aim above the head bone); glTF keeps the
+default camera and its embedded idle clip. Done: **idle blink** reusing
+the proven `blendShapeMaster` path (parse the `blink` preset; an irregular
+sine timer drives it crisply, un-smoothed). Done: **user mic-mute toggle**
+— a shared `Arc<AtomicBool>` toggled by an egui overlay button; when set
+the orchestrator discards mic input and resets the segmenter on the mute
+edge so Lana stops listening (and resumes cleanly on unmute). Idle
+sway/breathing retained. Still open: FR/EN voice picker, VRM hot-reload,
+gaze-at-camera. *Not GUI-tested in CI — verified on-device.*
 
 ### ⬜ Phase 8 — Tools (function-calling)
 
