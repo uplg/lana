@@ -1,112 +1,112 @@
-# Lana — Plan d'architecture
+# Lana — Architecture Plan
 
-Agent IA virtuel **local-only**, francophone (et anglophone), wrappé dans
-une application desktop avec avatar 3D réaliste qui bouge les lèvres en
-temps réel.
+A **local-only** virtual AI agent, French-first (English supported), wrapped
+in a desktop app with a realistic 3D avatar that lip-syncs in real time.
 
-Cible matérielle : **MacBook Pro M1 Max 32 Go**. Contrainte forte : la
-machine doit rester pleinement utilisable pour d'autres tâches pendant que
-Lana tourne.
+Target hardware: **MacBook Pro M1 Max 32 GB**. Hard constraint: the machine
+must stay fully usable for other work while Lana runs.
 
-> **État (2026-05-16)** : phases 0→4 livrées et validées. Boucle vocale
-> complète FR fonctionnelle (`lana converse`), voix **Estelle** réelle,
-> TTS en streaming natif, mémoire de conversation. Avatar / lip-sync (phases
-> 5+) pas encore commencés. Stack 100 % Rust : zéro Swift, zéro Python,
-> zéro cloud.
-
----
-
-## 1. Vision produit
-
-- Avatar 3D nommé **Lana**, rendu en temps réel
-- Conversation vocale naturelle (FR principal, EN supporté, switch transparent)
-- Lip-sync à 60 fps sur 12 visèmes ARKit
-- Latence voice-to-voice cible : **< 1 s end-to-end** (release)
-- 100 % local : aucune donnée ne quitte la machine
-- Empreinte mémoire totale **< 3 Go**, machine reste fluide
+> **Status (2026-05-16)**: phases 0→4 delivered and validated. Full French
+> voice loop works (`lana converse`), real **Estelle** voice, native
+> streaming TTS, conversation memory (in-RAM), LLM = Luth-LFM2-1.2B
+> (validated clearly better than Qwen3-1.7B). LLM/STT/TTS all auto-download
+> from Hugging Face (zero manual setup). Avatar / lip-sync (phases 5+) not
+> started. 100 % Rust stack: no Swift, no Python, no cloud.
 
 ---
 
-## 2. Pipeline conversationnelle (actuel)
+## 1. Product vision
+
+- 3D avatar named **Lana**, rendered in real time
+- Natural voice conversation (FR primary, EN supported, transparent switch)
+- Lip-sync at 60 fps over 12 ARKit visemes
+- Target voice-to-voice latency: **< 1 s end-to-end** (release build)
+- 100 % local: no data leaves the machine
+- Total memory footprint **< 3 GB**, machine stays responsive
+
+---
+
+## 2. Conversational pipeline (current)
 
 ```
-microphone (CoreAudio, cpal) — décimateur FIR maison 48→16 kHz
-  → VAD (earshot, NN Rust pur) → segmenteur d'énoncé
-    → STT (Parakeet-TDT v3, parakeet-rs / ONNX Runtime, EP CPU)
-      → LLM (Luth-LFM2-1.2B, candle/Metal) — historique multi-tours
-        → TTS (Kyutai Pocket TTS natif Rust, candle/Metal, french_24l + Estelle)
-          → streaming par frame Mimi (~80 ms) → speaker (cpal, annulable)
-          └─ (à venir) analyse temps réel → visèmes → blendshapes VRM 60 fps
+microphone (CoreAudio, cpal) — custom FIR decimator 48→16 kHz
+  → VAD (earshot, pure-Rust NN) → utterance segmenter
+    → STT (Parakeet-TDT v3, parakeet-rs / ONNX Runtime, CPU EP)
+      → LLM (Luth-LFM2-1.2B, candle/Metal) — multi-turn history
+        → TTS (Kyutai Pocket TTS native Rust, candle/Metal, french_24l + Estelle)
+          → streaming per Mimi frame (~80 ms) → speaker (cpal, cancellable)
+          └─ (planned) real-time analysis → visemes → VRM blendshapes 60 fps
 ```
 
-Tout passe par des **channels Tokio** entre étages. Le barge-in
-(interrompre Lana en parlant) est implémenté ; **désactivé par défaut**
-(half-duplex) car sans annulation d'écho acoustique le micro capte les
-haut-parleurs. `LANA_BARGEIN=1` l'active (casque / futur AEC).
+Everything flows through **Tokio channels** between stages. Barge-in
+(interrupting Lana by speaking) is implemented but **off by default**
+(half-duplex): without acoustic echo cancellation the mic picks up the
+speakers. `LANA_BARGEIN=1` enables it (headphones / future AEC).
 
 ---
 
-## 3. Stack technique (actuel)
+## 3. Technical stack (current)
 
-| Couche | Choix | Pourquoi | RAM |
+| Layer | Choice | Why | RAM |
 |---|---|---|---|
-| **Capture audio** | `cpal` (CoreAudio) + décimateur FIR windowed-sinc maison 48→16 kHz | Faible latence, Rust pur | — |
-| **VAD** | `earshot` (NN Rust pur, frames 256 éch. / 16 ms) | Aucun ONNX, aucun modèle à télécharger, ~110 Kio | ~0 |
-| **STT** | **Parakeet-TDT-0.6B-v3** via `parakeet-rs` (ONNX Runtime `ort`, EP **CPU**) | SOTA STT multilingue FR, Rust pur via lib C (pas de Swift). CoreML instable pour ce modèle, CPU rapide sur Apple Silicon | ~600 Mo (arène ORT) |
-| **LLM** | **Luth-LFM2-1.2B** Q8_0 GGUF via `candle` (Metal) — `quantized_lfm2` | Liquid LFM2 spécialisé FR (SOTA français à cette taille), très petit (~1,25 Go), pas de thinking. candle 0.10.2 a déjà l'archi `lfm2` | ~1,3 Go |
-| **TTS** | **Kyutai Pocket TTS** — portage Rust natif (vendored `babybirdprd/pocket-tts`, candle/Metal), remonté à la parité upstream (#155) | Vraie voix **Estelle** FR via embedding voix prédéfini (token-free, repo non-gated). Streaming natif par frame Mimi | ~300 Mo |
-| **Visèmes** | FFT + formants F1/F2 + onsets bilabiaux → 12 visèmes ARKit | *(non commencé)* Rust pur, latence ~10 ms | — |
-| **Avatar** | **Bevy** + `bevy_vrm` (full Rust, wgpu, fenêtre native) | *(non commencé)* 100 % Rust, VRM gratuits | ~600 Mo |
-| **UI** | `bevy_egui` overlay | *(non commencé)* pas de Tauri/webview | ~0 |
-| **Orchestrateur** | Tokio, channels, machine d'états | Idle / Listening / Thinking / Speaking + barge-in + mémoire | ~100 Mo |
+| **Audio capture** | `cpal` (CoreAudio) + custom windowed-sinc FIR decimator 48→16 kHz | Low latency, pure Rust | — |
+| **VAD** | `earshot` (pure-Rust NN, 256-sample / 16 ms frames) | No ONNX, no model download, ~110 KiB | ~0 |
+| **STT** | **Parakeet-TDT-0.6B-v3** via `parakeet-rs` (ONNX Runtime `ort`, **CPU** EP) | SOTA multilingual FR STT, pure Rust via a C lib (no Swift). CoreML unstable for this model; CPU is fast on Apple Silicon | ~600 MB (ORT arena) |
+| **LLM** | **Luth-LFM2-1.2B** Q8_0 GGUF via `candle` (Metal) — `quantized_lfm2` | Liquid LFM2 French-specialised (SOTA French at this size), tiny (~1.25 GB), no thinking. candle 0.10.2 already ships the `lfm2` arch. Validated clearly better than Qwen3-1.7B | ~1.3 GB |
+| **TTS** | **Kyutai Pocket TTS** — native Rust port (vendored `babybirdprd/pocket-tts`, candle/Metal), brought to upstream parity (#155) | Real **Estelle** FR voice via a predefined-voice embedding (token-free, ungated repo). Native per-Mimi-frame streaming | ~300 MB |
+| **Visemes** | FFT + F1/F2 formants + bilabial onsets → 12 ARKit visemes | *(not started)* pure Rust, ~10 ms latency | — |
+| **Avatar** | **Bevy** + `bevy_vrm` (full Rust, wgpu, native window) | *(not started)* 100 % Rust, free VRM models | ~600 MB |
+| **UI** | `bevy_egui` overlay | *(not started)* no Tauri/webview | ~0 |
+| **Orchestrator** | Tokio, channels, state machine | Idle / Listening / Thinking / Speaking + barge-in + memory | ~100 MB |
 
-Détails verrouillés des choix : voir mémoire projet `lana-stack`,
+Locked-in rationale for each choice: see project memory `lana-stack`,
 `lana-phase{1,2,3,4}-baseline`.
 
 ---
 
-## 4. Workspace Cargo (actuel)
+## 4. Cargo workspace (current)
 
 ```
 lana/
-├── Cargo.toml                 # workspace, lints stricts, exclude = ["vendor"]
-├── deny.toml                  # cargo-deny (licences/advisories/sources)
+├── Cargo.toml                 # workspace, strict lints, exclude = ["vendor"]
+├── deny.toml                  # cargo-deny (licenses/advisories/sources)
 ├── crates/
-│   ├── lana-audio/            # cpal capture + décimateur FIR + playback annulable
+│   ├── lana-audio/            # cpal capture + FIR decimator + cancellable playback (jitter buffer)
 │   ├── lana-vad/              # earshot + UtteranceSegmenter
-│   ├── lana-stt/              # parakeet-rs (ort), pas de Swift
-│   ├── lana-llm/              # candle + Luth-LFM2 GGUF (quantized_lfm2), mémoire (Message/Role)
-│   ├── lana-tts/              # pocket-tts vendored, streaming, voix Estelle
+│   ├── lana-stt/              # parakeet-rs (ort), HF auto-download, no Swift
+│   ├── lana-llm/              # candle + Luth-LFM2 GGUF (quantized_lfm2), HF auto-download, memory (Message/Role)
+│   ├── lana-tts/              # vendored pocket-tts, streaming, Estelle voice
 │   ├── lana-viseme/           # (stub)
 │   ├── lana-avatar/           # (stub)
 │   ├── lana-ui/               # (stub)
-│   ├── lana-orchestrator/     # machine d'états, channels, barge-in, historique
-│   └── lana-app/              # binaire : chat / transcribe / synth / converse
+│   ├── lana-orchestrator/     # state machine, channels, barge-in, history
+│   └── lana-app/              # binary: chat / transcribe / synth / converse
 └── vendor/
-    └── pocket-tts/            # fork babybirdprd vendored, patché parité Kyutai
-                               # (#155 + pont embedding voix). Workspace Cargo
-                               # propre, dépendance par `path`. .git retiré.
+    └── pocket-tts/            # vendored babybirdprd fork, patched to Kyutai
+                               # parity (#155 + voice-embedding bridge). Its
+                               # own Cargo workspace, `path` dependency, .git
+                               # stripped.
 ```
 
-Modèles : **LLM (Luth-LFM2), STT (Parakeet-TDT v3) et TTS (`french_24l` +
-voix Estelle) tous téléchargés au premier lancement depuis HF (non-gated,
-sans token) et cachés** — zéro setup, rien à récupérer à la main.
-Overrides locaux optionnels : `LANA_MODEL_PATH`/`LANA_TOKENIZER_PATH` (LLM),
-`LANA_STT_MODEL_DIR` (dir ONNX Parakeet).
+Models: **LLM (Luth-LFM2), STT (Parakeet-TDT v3) and TTS (`french_24l` +
+Estelle voice) are all downloaded from Hugging Face on first launch
+(ungated, no token) and cached** — zero setup, nothing to fetch by hand.
+Optional local overrides: `LANA_MODEL_PATH`/`LANA_TOKENIZER_PATH` (LLM),
+`LANA_STT_MODEL_DIR` (Parakeet ONNX dir).
 
 ---
 
-## 5. Garde-fous qualité (Rust 2024, clippy parfait)
+## 5. Quality gate (Rust 2024, perfect clippy)
 
-Lints stricts workspace : `clippy::pedantic` + `nursery`, `unwrap_used` /
+Strict workspace lints: `clippy::pedantic` + `nursery`, `unwrap_used` /
 `panic` = deny, `arithmetic_side_effects` / `expect_used` = warn, etc.
-`#[expect]`/`#[allow]` = dernier recours, restructurer d'abord.
+`#[expect]`/`#[allow]` are a last resort — restructure first.
 
-La crate vendored `pocket-tts` est tierce et garde sa propre tolérance
-clippy ; le gate workspace cible donc explicitement les crates `lana-*`
-(un `cargo clippy --workspace --all-targets` traverse le workspace vendored
-et casse sur `pocket-tts-cli` dont le `build.rs` exige des assets web
-inutiles à Lana).
+The vendored `pocket-tts` crate is third-party and keeps its own clippy
+allowance, so the workspace gate explicitly targets the `lana-*` crates
+(a plain `cargo clippy --workspace --all-targets` crosses into the vendored
+workspace and fails on `pocket-tts-cli`, whose `build.rs` needs web assets
+Lana never uses).
 
 ```sh
 cargo fmt --all --check
@@ -117,139 +117,157 @@ cargo test --workspace
 cargo deny check
 ```
 
-`cargo deny` : `all-features = false` (évite `intel-mkl-src` via la feature
-`mkl` ; on build candle en `metal`). `intel-mkl-src` clarifié en
+`cargo deny`: `all-features = false` (avoids `intel-mkl-src` via the `mkl`
+feature; candle is built with `metal`). `intel-mkl-src` is clarified as
 `LicenseRef-Intel-Simplified-Software-License`.
 
 ---
 
-## 6. Phases de livraison
+## 6. Delivery phases
 
-### ✅ Phase 0 — Squelette
-Workspace, lints stricts, `cargo deny` clean, CI sans téléchargement de modèles.
+### ✅ Phase 0 — Skeleton
+Workspace, strict lints, clean `cargo deny`, CI with no model downloads.
 
-### ✅ Phase 1 — Boucle texte
-`candle` (Metal) + LLM GGUF, CLI `chat`. Démarré sur Qwen3-1.7B
-(220-270 ms TTFT, ~60 tok/s) ; basculé sur **Luth-LFM2-1.2B**
-(`quantized_lfm2`) — Liquid LFM2 spécialisé français, template ChatML
-(BOS `<|startoftext|>`), pas de thinking, reset d'état implicite via
-`index_pos == 0` (pas d'API `clear_kv_cache`).
+### ✅ Phase 1 — Text loop
+`candle` (Metal) + LLM GGUF, CLI `chat`. Started on Qwen3-1.7B
+(220-270 ms TTFT, ~60 tok/s); **switched to Luth-LFM2-1.2B**
+(`quantized_lfm2`) — French-specialised Liquid LFM2, ChatML template
+(BOS `<|startoftext|>`), no thinking, implicit state reset via
+`index_pos == 0` (no `clear_kv_cache` API). Validated clearly better than
+Qwen3-1.7B for coherent French.
 
-### ✅ Phase 2 — Voix in
-`cpal` capture 48 kHz → FIR 16 kHz ; `earshot` VAD ; `parakeet-rs` STT
+### ✅ Phase 2 — Voice in
+`cpal` capture 48 kHz → FIR 16 kHz; `earshot` VAD; `parakeet-rs` STT
 (ONNX/ort, CPU). CLI `transcribe`.
 
-### ✅ Phase 3 — Voix out
-`lana-tts` sur portage Rust natif de Kyutai Pocket TTS (vendored
-babybirdprd). Port #155 (multilingue FR `french_24l`), pont d'embedding voix
-(PR babybirdprd #17) → voix **Estelle** réelle, token-free. Streaming natif
-par frame Mimi. CLI `synth`.
+### ✅ Phase 3 — Voice out
+`lana-tts` on the native Rust port of Kyutai Pocket TTS (vendored
+babybirdprd). Ported #155 (FR multilingual `french_24l`) + a voice-embedding
+bridge (babybirdprd PR #17) → real **Estelle** voice, token-free. Native
+per-Mimi-frame streaming. CLI `synth`.
 
-### ✅ Phase 4 — Boucle complète sans avatar
-`lana-orchestrator` : machine d'états Tokio, barge-in (opt-in), TTS
-streaming au fil de l'eau, **mémoire de conversation** multi-tours bornée.
-CLI `converse`.
+### ✅ Phase 4 — Full loop, no avatar
+`lana-orchestrator`: Tokio state machine, barge-in (opt-in), streaming TTS,
+**multi-turn conversation memory** (in-RAM, bounded). CLI `converse`.
 
-### ⬜ Phase 5 — Avatar statique
-`lana-avatar` : Bevy + `bevy_vrm`, charge un `.vrm`, caméra/éclairage,
-idle. `bevy_egui` overlay (transcript + réglages). Une seule fenêtre.
+### ⬜ Phase 5 — Static avatar
+`lana-avatar`: Bevy + `bevy_vrm`, load a `.vrm`, camera/lighting, idle.
+`bevy_egui` overlay (transcript + settings). Single window.
 
 ### ⬜ Phase 6 — Lip-sync
-`lana-viseme` : FFT (rustfft) ~50 Hz sur le flux TTS, formants F1/F2,
-onsets bilabiaux → 12 visèmes ARKit. Bevy interpole les blendshapes à
-60 fps. Brancher sur le flux PCM déjà produit en streaming par lana-tts.
+`lana-viseme`: FFT (rustfft) ~50 Hz on the TTS stream, F1/F2 formants,
+bilabial onsets → 12 ARKit visemes. Bevy interpolates blendshapes at
+60 fps. Hook onto the PCM stream lana-tts already produces.
 
 ### ⬜ Phase 7 — Polish
-Choix de voix FR/EN dans l'UI, persistance conversation, hot-reload VRM,
-mode veille (respiration, clignements, regard caméra).
+FR/EN voice picker in the UI, VRM hot-reload, idle mode (breathing,
+blinking, gaze at camera).
 
-### ⬜ Phase 8 — Outils (function-calling)
+### ⬜ Phase 8 — Tools (function-calling)
 
-Permettre à Lana d'appeler des outils locaux (ex. API maison domotique :
-allumer/éteindre une lampe). **Reste 100 % local** : l'outil n'est qu'un
-appel HTTP vers une API sur le réseau de l'utilisateur, aucun cloud.
+Let Lana call local tools (e.g. a home-automation API: lights on/off).
+**Stays 100 % local**: a tool is just an HTTP call to an API on the user's
+network, no cloud.
 
-- **Bonne nouvelle** : le template Luth-LFM2 a un format outils *natif* —
-  liste d'outils injectée en system entre `<|tool_list_start|>[…]<|tool_list_end|>`,
-  et réponses d'outil enveloppées `<|tool_response_start|>…<|tool_response_end|>`
-  pour le rôle `tool`. Pas besoin d'inventer un protocole.
-- Le modèle émet un appel d'outil ; l'orchestrateur **détecte ce flux**
-  (ne l'envoie pas au TTS — filtre de flux ciblé), exécute l'appel HTTP
-  local, réinjecte le résultat comme message `role: tool`, puis le LLM
-  repasse pour produire la phrase parlée finale. Tour LLM → outil → LLM.
-- Briques déjà là : historique multi-tours (`Message`/`Role` — ajouter un
-  rôle `Tool` + le wrapping `<|tool_*|>` dans le builder de prompt).
-- **Risque** : Luth-LFM2-1.2B est très petit ; le function-calling (JSON
-  correct, bon choix d'outil, pas d'arguments hallucinés) est fragile sur
-  les petits modèles, même avec un format natif. Mitigation : peu d'outils,
-  schémas serrés ; plan B = routeur d'intention minimal en amont, ou monter
-  d'un cran de modèle (tension avec le choix « petits modèles » verrouillé
-  en §9).
-- Approche : MVP un seul outil (lampe on/off), valider la fiabilité avant
-  de généraliser.
+- **Good news**: the Luth-LFM2 template has a *native* tools format — a
+  tool list injected into the system message between
+  `<|tool_list_start|>[…]<|tool_list_end|>`, and tool replies wrapped in
+  `<|tool_response_start|>…<|tool_response_end|>` for the `tool` role. No
+  protocol to invent.
+- The model emits a tool call; the orchestrator **detects this stream**
+  (does not send it to TTS — a targeted stream filter), runs the local
+  HTTP call, feeds the result back as a `role: tool` message, then the LLM
+  runs again to produce the final spoken sentence. Turn = LLM → tool → LLM.
+- Building blocks already there: multi-turn history (`Message`/`Role` — add
+  a `Tool` role + the `<|tool_*|>` wrapping in the prompt builder).
+- **Risk**: Luth-LFM2-1.2B is very small; function-calling (valid JSON,
+  right tool choice, no hallucinated args) is fragile on small models even
+  with a native format. Mitigation: few tools, tight schemas; fallback =
+  a minimal intent router upstream, or a bigger model (tension with the
+  "small models" decision locked in §9).
+- Approach: MVP with a single tool (light on/off), validate reliability
+  before generalising.
+
+### ⬜ Phase 9 — Cross-session memory
+
+Today the conversation history lives only in RAM (`Vec<Message>` in the
+orchestrator, bounded to 24 turns) — everything is lost when the app
+restarts. Persist it so Lana remembers across runs.
+
+- **Conversation persistence**: append turns to a local store (e.g. JSON
+  lines or SQLite under `~/Library/Application Support/Lana/`), reload the
+  recent window at startup so a new `converse` continues the prior chat.
+- **Durable user facts**: distill stable facts (the user's name,
+  preferences) into a small profile re-injected into the system prompt, so
+  identity/preferences survive beyond the bounded window.
+- **Bounded growth**: keep a recent verbatim window + a rolling summary of
+  older turns (summarised by the LLM itself between turns) so the prompt
+  stays small without losing long-term context.
+- 100 % local, plain files, user-wipeable. Pairs with the Phase 7 UI
+  (show/clear memory).
 
 ---
 
-## 7. Raffinements non-prioritaires (dette / nice-to-have)
+## 7. Non-priority refinements (debt / nice-to-have)
 
-À faire quand l'avatar avance ; aucun ne bloque la boucle vocale.
+For when the avatar work progresses; none blocks the voice loop.
 
-| Sujet | Détail | Risque si ignoré |
+| Topic | Detail | Risk if ignored |
 |---|---|---|
-| **Ports upstream restants** | Porter Kyutai #143 (split sur virgules → moins de mots sautés sur longues phrases), #165 (fix device non-CPU), #181 (fix clonage + quantization) dans le `pocket-tts` vendored | Faible : qualité/robustesse marginale ; #143 améliorerait la prosodie des longues phrases |
-| **Troncature TTS (« phrases coupées »)** | Le texte est complet, l'audio est coupé : EOS précoce du modèle Pocket TTS. Leviers : `eos_threshold` (-4.0 → ~-6.0) ou `model_recommended_frames_after_eos`. À régler avec une phrase repro à l'oreille | Moyen : qualité perçue |
-| **Buffer anti-underrun streaming** | En release le TTS doit tenir le temps réel ; sinon pré-bufferiser quelques frames avant lecture | Faible (release rapide) |
-| **Upstreamer le portage** | Remonter le port #155 + pont embedding en PR sur `babybirdprd/pocket-tts`, puis repasser de `path` à git-dep | Dette : on maintient un vendored |
-| **Clonage voix WAV** | `LANA_TTS_CLONE_WAV` nécessite les poids voice-cloning gated (`kyutai/pocket-tts`, token HF). Embedding Estelle suffit pour l'usage courant | Faible |
-| **Tests parité TTS** | Les fixtures vendored sont gelées pré-#155 ; non utilisées comme oracle. Régénérer demanderait un env Python (exclu) | Faible : oracle = gates + oreille |
-| **CI** | Vérifier que `.github/workflows/ci.yml` reflète le gate réel (crates `lana-*`, pas `--workspace --all-targets`) | Moyen : CI verte trompeuse |
-| **Mémoire conversation** | Bornée à 24 messages (drop des plus vieux). Pas de résumé / fenêtre par tokens | Faible : sessions très longues perdent le contexte ancien |
+| **Remaining upstream ports** | #143 (comma split) **done** in vendored `pocket-tts`. #165 (non-CPU device) and #181 (clone + quantization) are **N/A to the Rust port** (Python-only bugs: `device.type` string; torch.ao dynamic quant — the Rust port has neither). Documented, not ported. | None (resolved) |
+| **TTS truncation ("clipped sentences")** | Text is complete, audio cut short: early model EOS. `LANA_TTS_EOS_THRESHOLD` lever exists; default -4.0 kept (lowering it makes truncation *worse* — measured). Residual fix = raise toward 0 on a repro sentence. | Medium: perceived quality |
+| **Upstream the port** | Send the #155 port + embedding bridge as a PR to `babybirdprd/pocket-tts`, then move from `path` back to a git dep | Debt: maintaining a vendored fork |
+| **WAV voice cloning** | `LANA_TTS_CLONE_WAV` needs the gated voice-cloning weights (`kyutai/pocket-tts`, HF token). The Estelle embedding covers normal use | Low |
+| **TTS parity tests** | Vendored fixtures are frozen pre-#155; not used as the oracle. Regenerating would need a Python env (excluded) | Low: oracle = gates + ear |
+| **CI** | Verify `.github/workflows/ci.yml` matches the real gate (`lana-*` crates, not `--workspace --all-targets`) | Medium: misleadingly green CI |
 
 ---
 
-## 8. Risques techniques restants
+## 8. Remaining technical risks
 
-| Risque | Mitigation |
+| Risk | Mitigation |
 |---|---|
-| TTS sous le temps réel en streaming (debug) | Toujours lancer `converse` en `--release` (LTO). Pré-buffer si besoin |
-| EOS précoce → phrases coupées | Tuning `eos_threshold` / frames-after-eos (§7) |
-| `bevy_vrm` maturité (blendshapes ARKit, physique cheveux) | Plan B : VRM via `gltf` brut + shader custom |
-| Arène mémoire ONNX Runtime volumineuse (STT) | Acceptable sur 32 Go ; logs `ort` mis en `warn` par défaut |
-| Maintien d'un fork vendored pocket-tts | Upstreamer en PR (§7) |
+| TTS below real time while streaming (debug builds) | Always run `converse` in `--release` (LTO). The audio path now has a ~250 ms jitter buffer that re-arms on underrun |
+| Early EOS → clipped sentences | Tune `eos_threshold` toward 0 (§7) |
+| `bevy_vrm` maturity (ARKit blendshapes, hair physics) | Plan B: VRM via raw `gltf` + custom shader |
+| Large ONNX Runtime memory arena (STT) | Acceptable on 32 GB; `ort` logs set to `warn` by default |
+| Maintaining a vendored pocket-tts fork | Upstream as a PR (§7) |
 
 ---
 
-## 9. Décisions verrouillées
+## 9. Locked-in decisions
 
-- **Pas de Python** dans la stack runtime (ni sidecar, ni dépendance).
-- **Pas de Swift / CoreML bridge** : tout STT/TTS est Rust pur (ONNX `ort` / candle).
-- **Pas de Tauri / webview** : Bevy gère fenêtre, UI overlay et avatar.
-- **Pas de cloud**, pas d'API externe, pas de télémétrie.
-- **Rust Edition 2024**, dernières versions stables, clippy pedantic + nursery.
-- **Modèles** : LLM + STT + TTS auto-téléchargés depuis HF au 1er
-  lancement (cache, sans token), pas embarqués dans le binaire ; overrides
-  locaux optionnels.
-- **Préférer petit & natif Apple Silicon** à gros & plus capable
-  (latence voice-first > exactitude maximale).
-- **Bilingue par construction** : Parakeet FR/EN, Pocket TTS FR (Estelle),
-  Luth-LFM2 (spécialisé FR, EN conservé par cross-lingual transfer).
+- **No Python** in the runtime stack (no sidecar, no dependency).
+- **No Swift / CoreML bridge**: all STT/TTS is pure Rust (ONNX `ort` / candle).
+- **No Tauri / webview**: Bevy owns the window, overlay UI and avatar.
+- **No cloud**, no external API, no telemetry.
+- **Rust Edition 2024**, latest stable deps, clippy pedantic + nursery.
+- **Models**: LLM + STT + TTS auto-downloaded from HF on first run (cached,
+  no token), not embedded in the binary; optional local overrides.
+- **Prefer small & Apple-Silicon-native** over large & more capable
+  (voice-first latency > maximum accuracy).
+- **Bilingual by construction**: Parakeet FR/EN, Pocket TTS FR (Estelle),
+  Luth-LFM2 (FR-specialised, EN retained via cross-lingual transfer).
 
 ---
 
-## 10. Prochaines étapes immédiates
+## 10. Immediate next steps
 
-Livré récemment : mémoire de conversation, streaming TTS natif, voix
-Estelle, tutoiement par défaut, **LLM basculé Qwen3-1.7B → Luth-LFM2-1.2B**
-(spécialisé FR, `quantized_lfm2`, `ThinkFilter` supprimé), #143 (split
-virgules), resampler streaming continu (fix grésillement). Levier
-`LANA_TTS_EOS_THRESHOLD` (défaut -4.0 conservé : le baisser aggrave la
-troncature).
+Recently delivered: conversation memory (in-RAM), native streaming TTS,
+Estelle voice, default `tu` (informal) form, **LLM switched
+Qwen3-1.7B → Luth-LFM2-1.2B** (FR-specialised, `quantized_lfm2`,
+`ThinkFilter` removed), #143 (comma split), continuous streaming resampler,
+~250 ms audio jitter buffer (crackle fix), LLM/STT/TTS HF auto-download
+(zero setup). `LANA_TTS_EOS_THRESHOLD` lever (default -4.0 kept — lowering
+worsens truncation).
 
-1. Re-tester `lana converse` (`--release`) : mémoire, plus de réponses
-   vides, audio sans grésillement.
-2. **Phase 5** : démarrer `lana-avatar` (Bevy + bevy_vrm), charger un VRM,
-   fenêtre + idle, overlay egui transcript.
-3. Phase 6 : brancher `lana-viseme` sur le flux PCM streaming de lana-tts.
-4. **Phase 8** (outils) : MVP function-calling via le format outils natif
-   Luth-LFM2 (`<|tool_list_start|>`/`<|tool_response_start|>`) sur un seul
-   outil (lampe on/off via API locale) — peut passer avant ou après l'avatar.
+1. Re-test `lana converse` (`--release`): memory, no empty replies, clean
+   audio (no crackle), zero-setup downloads.
+2. **Phase 5**: start `lana-avatar` (Bevy + bevy_vrm), load a VRM, window +
+   idle, egui transcript overlay.
+3. **Phase 9**: cross-session memory — persist conversation + user profile
+   to disk so nothing is lost on restart (can land before/after the avatar).
+4. Phase 6: hook `lana-viseme` onto lana-tts's streaming PCM.
+5. **Phase 8** (tools): MVP function-calling via the native Luth-LFM2 tools
+   format (`<|tool_list_start|>`/`<|tool_response_start|>`) on a single
+   tool (light on/off via a local API).
