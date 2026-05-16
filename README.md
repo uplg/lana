@@ -57,19 +57,13 @@ cargo build --release
 
 ## Run
 
-The LLM (Luth-LFM2-1.2B) and TTS (Pocket TTS `french_24l` + the Estelle
-voice) are **downloaded from Hugging Face on first launch and cached** —
-nothing to fetch by hand, no HF token needed (public repos). Only the STT
-model dir is a required local path for now.
+The LLM (Luth-LFM2-1.2B), STT (Parakeet-TDT-0.6B-v3) and TTS (Pocket TTS
+`french_24l` + the Estelle voice) are **all downloaded from Hugging Face on
+first launch and cached** — nothing to fetch by hand, no HF token needed
+(public repos). First run pulls ≈ 1.25 GB (LLM) + ≈ 2.5 GB (STT) + the TTS
+model/voice; subsequent runs are instant from cache. **Zero setup:**
 
 ```sh
-export LANA_STT_MODEL_DIR="$HOME/Library/Application Support/Lana/stt"   # Parakeet ONNX dir
-
-# Optional: override the LLM with a local GGUF + tokenizer.json instead of
-# the auto-downloaded Luth-LFM2-1.2B (kurakurai/Luth-LFM2-1.2B-GGUF, Q8_0):
-# export LANA_MODEL_PATH=/path/to/model.gguf
-# export LANA_TOKENIZER_PATH=/path/to/tokenizer.json
-
 # Full voice loop (mic → STT → LLM → TTS → speaker), run in release for realtime:
 cargo run --release --bin lana -- converse
 
@@ -79,11 +73,13 @@ cargo run --release --bin lana -- transcribe <in.wav>        # STT
 cargo run --release --bin lana -- synth "Bonjour" out.wav    # TTS
 ```
 
-Voice override (optional): `LANA_TTS_VOICE_EMBEDDING` (Kyutai predefined
-embedding, path or `hf://…`), `LANA_TTS_VOICE_PROMPT` (an `audio_prompt`
-safetensors), or `LANA_TTS_CLONE_WAV` (clone from a WAV — needs the gated
-voice-cloning weights). Default is the real French Estelle. `LANA_BARGEIN=1`
-enables barge-in (headphones / AEC only).
+Optional local overrides (power users): `LANA_MODEL_PATH` /
+`LANA_TOKENIZER_PATH` (LLM GGUF + tokenizer.json), `LANA_STT_MODEL_DIR`
+(directory of Parakeet ONNX files). Voice override: `LANA_TTS_VOICE_EMBEDDING`
+(Kyutai predefined embedding, path or `hf://…`), `LANA_TTS_VOICE_PROMPT`
+(an `audio_prompt` safetensors), or `LANA_TTS_CLONE_WAV` (clone from a WAV —
+needs the gated voice-cloning weights). Default voice is the real French
+Estelle. `LANA_BARGEIN=1` enables barge-in (headphones / AEC only).
 
 ## Development
 

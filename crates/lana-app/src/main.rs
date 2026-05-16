@@ -7,12 +7,12 @@
 //! lana transcribe <path.wav> # one-shot STT smoke test (Phase 2)
 //! ```
 //!
-//! The LLM (Luth-LFM2) and TTS (Pocket TTS / Estelle) auto-download from
-//! Hugging Face on first run (cached); nothing to fetch by hand.
-//! `LANA_MODEL_PATH` / `LANA_TOKENIZER_PATH` optionally override the LLM
-//! with local files. STT reads its ONNX model dir from `LANA_STT_MODEL_DIR`.
-//! Entirely Rust: candle (LLM/TTS) + ONNX Runtime (STT) + earshot (VAD).
-//! No Swift, no `CoreML`.
+//! The LLM (Luth-LFM2), STT (Parakeet-TDT v3) and TTS (Pocket TTS /
+//! Estelle) all auto-download from Hugging Face on first run (cached) —
+//! nothing to fetch by hand, no HF token (public repos). Optional local
+//! overrides: `LANA_MODEL_PATH` / `LANA_TOKENIZER_PATH` (LLM),
+//! `LANA_STT_MODEL_DIR` (STT). Entirely Rust: candle (LLM/TTS) + ONNX
+//! Runtime (STT) + earshot (VAD). No Swift, no `CoreML`.
 
 #![forbid(unsafe_code)]
 
@@ -249,15 +249,15 @@ async fn chat_turn(
 
 // ---- transcribe (phase 2 smoke test) --------------------------------------
 
-fn stt_config_from_env() -> Result<SttConfig> {
-    let model_dir = std::env::var("LANA_STT_MODEL_DIR")
-        .map(PathBuf::from)
-        .context(
-            "LANA_STT_MODEL_DIR not set (dir with Parakeet-TDT v3 ONNX files: \
-             encoder-model.onnx, encoder-model.onnx.data, \
-             decoder_joint-model.onnx, vocab.txt — from HF \
-             istupakov/parakeet-tdt-0.6b-v3-onnx)",
-        )?;
+/// Build the STT config. The Parakeet-TDT v3 ONNX model is downloaded from
+/// Hugging Face (cached, ~2.5 GB on first run) — nothing to fetch by hand.
+/// `LANA_STT_MODEL_DIR` overrides with a local directory. The (possibly
+/// downloading) resolution runs off the async runtime.
+async fn load_stt_config() -> Result<SttConfig> {
+    let env_dir = std::env::var("LANA_STT_MODEL_DIR").ok();
+    let model_dir = tokio::task::spawn_blocking(move || lana_stt::resolve_model_dir(env_dir))
+        .await
+        .context("stt asset resolve task")??;
     Ok(SttConfig { model_dir })
 }
 
@@ -303,7 +303,7 @@ async fn run_transcribe(path: &Path) -> Result<()> {
     }
 
     let (samples, rate) = decode_wav(path)?;
-    let engine = SttEngine::new(stt_config_from_env()?).await?;
+    let engine = SttEngine::new(load_stt_config().await?).await?;
     let started = Instant::now();
     let transcript = engine.transcribe_samples(samples, rate, 1).await?;
     let wall = started.elapsed();
@@ -354,7 +354,7 @@ async fn run_converse() -> Result<()> {
     // Build every engine first (each loads its own model). STT/TTS/VAD pull
     // their CoreML models on first run; the LLM reads the GGUF from env.
     let llm = LlmEngine::new(load_llm_config().await?).await?;
-    let stt = SttEngine::new(stt_config_from_env()?).await?;
+    let stt = SttEngine::new(load_stt_config().await?).await?;
     let tts = TtsEngine::new(tts_config_from_env()).await?;
     let vad = VadEngine::new(VadConfig::default()).await?;
     let out = AudioOutput::start().map_err(|e| anyhow::anyhow!("audio output: {e}"))?;

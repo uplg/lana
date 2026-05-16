@@ -9,5 +9,5 @@
 mod engine;
 mod error;
 
-pub use engine::{SttConfig, SttEngine, Transcript};
+pub use engine::{SttConfig, SttEngine, Transcript, resolve_model_dir};
 pub use error::SttError;

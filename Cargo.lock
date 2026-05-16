@@ -1972,6 +1972,7 @@ dependencies = [
 name = "lana-stt"
 version = "0.1.0"
 dependencies = [
+ "hf-hub",
  "parakeet-rs",
  "parking_lot",
  "thiserror 2.0.18",

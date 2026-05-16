@@ -88,11 +88,11 @@ lana/
                                # propre, dépendance par `path`. .git retiré.
 ```
 
-Modèles : **LLM (Luth-LFM2) + TTS (`french_24l` + voix Estelle) téléchargés
-au premier lancement depuis HF (non-gated, sans token) et cachés** — rien à
-récupérer à la main. `LANA_MODEL_PATH`/`LANA_TOKENIZER_PATH` permettent un
-override local du LLM. Seul `LANA_STT_MODEL_DIR` (ONNX Parakeet) reste un
-chemin local requis.
+Modèles : **LLM (Luth-LFM2), STT (Parakeet-TDT v3) et TTS (`french_24l` +
+voix Estelle) tous téléchargés au premier lancement depuis HF (non-gated,
+sans token) et cachés** — zéro setup, rien à récupérer à la main.
+Overrides locaux optionnels : `LANA_MODEL_PATH`/`LANA_TOKENIZER_PATH` (LLM),
+`LANA_STT_MODEL_DIR` (dir ONNX Parakeet).
 
 ---
 
@@ -226,8 +226,9 @@ appel HTTP vers une API sur le réseau de l'utilisateur, aucun cloud.
 - **Pas de Tauri / webview** : Bevy gère fenêtre, UI overlay et avatar.
 - **Pas de cloud**, pas d'API externe, pas de télémétrie.
 - **Rust Edition 2024**, dernières versions stables, clippy pedantic + nursery.
-- **Modèles** : LLM + TTS auto-téléchargés depuis HF au 1er lancement
-  (cache, sans token), pas embarqués dans le binaire ; STT en chemin local.
+- **Modèles** : LLM + STT + TTS auto-téléchargés depuis HF au 1er
+  lancement (cache, sans token), pas embarqués dans le binaire ; overrides
+  locaux optionnels.
 - **Préférer petit & natif Apple Silicon** à gros & plus capable
   (latence voice-first > exactitude maximale).
 - **Bilingue par construction** : Parakeet FR/EN, Pocket TTS FR (Estelle),

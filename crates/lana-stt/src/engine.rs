@@ -10,12 +10,63 @@
 use std::path::PathBuf;
 use std::sync::Arc;
 
+use hf_hub::Repo;
+use hf_hub::api::sync::ApiBuilder;
 use parakeet_rs::{ParakeetTDT, Transcriber};
 use parking_lot::Mutex;
 use tokio::task::spawn_blocking;
 use tracing::info;
 
 use crate::error::SttError;
+
+/// Parakeet-TDT-0.6B-v3 ONNX weights on the Hub (public, no token).
+const STT_REPO: &str = "istupakov/parakeet-tdt-0.6b-v3-onnx";
+/// The exact files `parakeet-rs` `ParakeetTDT::from_pretrained` needs in
+/// one directory (`encoder-model.onnx` loads `encoder-model.onnx.data` as
+/// a sibling). The int8 / nemo128 / config files are not used.
+const STT_FILES: [&str; 4] = [
+    "vocab.txt",
+    "encoder-model.onnx",
+    "encoder-model.onnx.data",
+    "decoder_joint-model.onnx",
+];
+
+/// Resolve the Parakeet model directory.
+///
+/// An explicit `env_dir` (from `LANA_STT_MODEL_DIR`) wins; otherwise the
+/// ONNX files are downloaded from the Hub and cached (no token — public
+/// repo), and their shared snapshot directory is returned. Performs
+/// blocking network I/O on first run (~2.5 GB); call it off the async
+/// runtime (e.g. via `spawn_blocking`).
+///
+/// # Errors
+///
+/// Returns [`SttError::Init`] if the Hub API or a download fails.
+pub fn resolve_model_dir(env_dir: Option<String>) -> Result<PathBuf, SttError> {
+    if let Some(dir) = env_dir {
+        return Ok(PathBuf::from(dir));
+    }
+    let api = ApiBuilder::new()
+        .with_token(std::env::var("HF_TOKEN").ok())
+        .build()
+        .map_err(|e| SttError::Init(format!("hf-hub api: {e}")))?;
+    let repo = api.repo(Repo::model(STT_REPO.to_owned()));
+
+    let mut model_dir: Option<PathBuf> = None;
+    for file in STT_FILES {
+        info!(
+            repo = STT_REPO,
+            file, "resolving STT model file from Hugging Face (cached)"
+        );
+        let path = repo
+            .get(file)
+            .map_err(|e| SttError::Init(format!("download {STT_REPO}/{file}: {e}")))?;
+        if model_dir.is_none() {
+            model_dir = path.parent().map(std::path::Path::to_path_buf);
+        }
+    }
+    model_dir.ok_or_else(|| SttError::Init("could not resolve STT model directory".to_owned()))
+}
 
 /// Static configuration of an [`SttEngine`].
 #[derive(Debug, Clone)]

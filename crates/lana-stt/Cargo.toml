@@ -19,3 +19,4 @@ tokio = { workspace = true, features = ["sync", "rt"] }
 parking_lot.workspace = true
 
 parakeet-rs.workspace = true
+hf-hub = { workspace = true }
