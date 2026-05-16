@@ -1,40 +1,47 @@
 # Lana
 
-Local-only conversational AI agent with a 3D avatar that lip-syncs in real time. French (primary) and English.
+Local-only conversational voice agent. You speak, Lana answers out loud, in
+French (primary) or English. A real-time lip-syncing 3D avatar is the next
+milestone. Nothing leaves the machine — no cloud, no telemetry, no Python.
 
-Target hardware: MacBook Pro M1 Max 32 GB. The machine must remain fully usable for other work while Lana is running. Total runtime memory footprint: ~2 GB.
+Target hardware: MacBook Pro M1 Max 32 GB. The machine stays fully usable
+for other work while Lana runs (runtime footprint ≈ 2 GB).
 
-See [PLAN.md](./PLAN.md) for the full architecture, model choices and phased delivery.
-
-## Stack
+## Stack (current)
 
 | Layer | Choice |
 |---|---|
-| Capture | `cpal` (CoreAudio) |
-| VAD | Silero v5 (ONNX via `ort`) |
-| STT | Parakeet-TDT-0.6B-v3 (CoreML / Neural Engine via Swift bridge) |
-| LLM | Gemma 4 E2B UQFF Q5K (Metal via `mistral.rs`) |
-| TTS | Kyutai Pocket TTS (MLX int4 via `mlx-rs`) |
-| Lip-sync | Real-time FFT + formants → 12 ARKit visemes |
-| Avatar | Bevy + `bevy_vrm` |
-| UI | `bevy_egui` overlay |
+| Capture | `cpal` (CoreAudio) + custom windowed-sinc FIR decimator 48→16 kHz |
+| VAD | `earshot` — pure-Rust NN VAD, no ONNX, no model download |
+| STT | Parakeet-TDT-0.6B-v3 via `parakeet-rs` (ONNX Runtime / `ort`, CPU EP, pure Rust — **no Swift**) |
+| LLM | Qwen3-1.7B Q5_K_M GGUF via `candle` (Metal) |
+| TTS | Kyutai Pocket TTS, native Rust port (vendored `babybirdprd/pocket-tts` on `candle`/Metal), French `french_24l` + real **Estelle** voice |
+| Lip-sync | Real-time FFT + formants → 12 ARKit visemes *(not started)* |
+| Avatar | Bevy + `bevy_vrm` *(not started)* |
+| UI | `bevy_egui` overlay *(not started)* |
+| Orchestrator | Tokio state machine: streaming TTS, conversation memory, barge-in |
 
-No Python. No cloud. No telemetry.
+No Python. No Swift. No cloud. No telemetry.
 
 ## Workspace layout
 
 ```
 crates/
-├── lana-audio          # microphone capture, ring buffers
-├── lana-vad            # voice activity detection
-├── lana-stt            # speech-to-text (Parakeet via Swift FFI)
-├── lana-llm            # local LLM inference
-├── lana-tts            # text-to-speech (Kyutai Pocket TTS)
-├── lana-viseme         # audio-to-viseme analysis
-├── lana-avatar         # VRM rendering, blendshape control
-├── lana-ui             # in-app egui overlay
+├── lana-audio          # mic capture, FIR decimator, cancellable playback
+├── lana-vad            # voice activity detection (earshot) + utterance segmenter
+├── lana-stt            # speech-to-text (Parakeet via parakeet-rs / ort)
+├── lana-llm            # local LLM (candle + Qwen3 GGUF), streaming, memory
+├── lana-tts            # text-to-speech (native Pocket TTS), streaming
+├── lana-viseme         # audio-to-viseme analysis (stub)
+├── lana-avatar         # VRM rendering, blendshape control (stub)
+├── lana-ui             # in-app egui overlay (stub)
 ├── lana-orchestrator   # state machine, channels, barge-in
 └── lana-app            # binary: wires everything
+
+vendor/
+└── pocket-tts          # vendored babybirdprd/pocket-tts, patched to Kyutai
+                         # upstream parity (#155 multilingual + voice-embedding
+                         # bridge); its own Cargo workspace, path dependency
 ```
 
 ## Build
@@ -47,25 +54,48 @@ cargo build --release
 
 ## Run
 
+The LLM weights/tokenizer and STT model are loaded from local paths via env
+vars. The TTS model (`french_24l`) and the Estelle voice are downloaded from
+Hugging Face on first launch (ungated `pocket-tts-without-voice-cloning`
+repo — no HF token needed) and cached.
+
 ```sh
-cargo run --release --bin lana
+export LANA_MODEL_PATH="$HOME/Library/Application Support/Lana/models/Qwen3-1.7B-Q5_K_M.gguf"
+export LANA_TOKENIZER_PATH="$HOME/Library/Application Support/Lana/models/tokenizer.json"
+export LANA_STT_MODEL_DIR="$HOME/Library/Application Support/Lana/stt"   # Parakeet ONNX dir
+
+# Full voice loop (mic → STT → LLM → TTS → speaker), run in release for realtime:
+cargo run --release --bin lana -- converse
+
+# One-shots:
+cargo run --release --bin lana -- chat                       # text REPL
+cargo run --release --bin lana -- transcribe <in.wav>        # STT
+cargo run --release --bin lana -- synth "Bonjour" out.wav    # TTS
 ```
 
-Models are downloaded to `~/Library/Application Support/Lana/models/` on first launch.
+Voice override (optional): `LANA_TTS_VOICE_EMBEDDING` (Kyutai predefined
+embedding, path or `hf://…`), `LANA_TTS_VOICE_PROMPT` (an `audio_prompt`
+safetensors), or `LANA_TTS_CLONE_WAV` (clone from a WAV — needs the gated
+voice-cloning weights). Default is the real French Estelle. `LANA_BARGEIN=1`
+enables barge-in (headphones / AEC only).
 
 ## Development
 
-The workspace enforces strict lints. Before pushing:
+Strict lints (Edition 2024, clippy pedantic + nursery, `unwrap_used`/`panic`
+denied). The vendored `pocket-tts` crate is third-party and keeps its own
+allowance, so the workspace gate scopes to the `lana-*` crates (a plain
+`cargo clippy --workspace --all-targets` would cross into the vendored
+workspace and try to build `pocket-tts-cli`, whose `build.rs` needs web
+assets Lana never uses):
 
 ```sh
 cargo fmt --all --check
-cargo clippy --workspace --all-targets --all-features -- -D warnings
+cargo clippy -p lana-audio -p lana-vad -p lana-stt -p lana-llm -p lana-tts \
+             -p lana-viseme -p lana-avatar -p lana-ui -p lana-orchestrator \
+             -p lana-app --all-targets --no-deps -- -D warnings
 cargo test --workspace
 cargo deny check
-cargo audit
 ```
-
-CI runs all of the above on `macos-latest`.
 
 ## License
 
