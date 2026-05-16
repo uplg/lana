@@ -1,10 +1,11 @@
 # Lana
 
 Local-only conversational voice agent. You speak, Lana answers out loud, in
-French (primary) or English, as a 3D VRM avatar in a native window. Planned
-next: real-time lip-sync (Phase 6), cross-session memory (Phase 9) and
-local tool-calling (Phase 8 — e.g. driving your own home API to switch the
-lights, still 100 % local: just an HTTP call on your network). See
+French (primary) or English, as a 3D avatar in a native window with
+audio-driven lip-sync. Planned next: a proper resting pose / idle
+animation (Phase 7), local tool-calling (Phase 8 — e.g. driving your own
+home API to switch the lights, still 100 % local: just an HTTP call on
+your network) and cross-session memory (Phase 9). See
 [PLAN.md](./PLAN.md). Nothing leaves the machine — no cloud, no telemetry,
 no Python.
 
@@ -20,8 +21,8 @@ for other work while Lana runs (runtime footprint ≈ 2 GB).
 | STT | Parakeet-TDT-0.6B-v3 via `parakeet-rs` (ONNX Runtime / `ort`, CPU EP, pure Rust — **no Swift**) |
 | LLM | Luth-LFM2-1.2B (French-specialised Liquid LFM2) Q8_0 GGUF via `candle` (Metal) |
 | TTS | Kyutai Pocket TTS, native Rust port (vendored `babybirdprd/pocket-tts` on `candle`/Metal), French `french_24l` + real **Estelle** voice |
-| Lip-sync | Real-time FFT + formants → 12 ARKit visemes *(not started — Phase 6)* |
-| Avatar | Bevy 0.18 — native window, camera/light, idle. `LANA_AVATAR_PATH`: realistic `.glb`/`.gltf` (e.g. [Avaturn](https://avaturn.me)) or a `.vrm` (`bevy_vrm` 0.3) |
+| Lip-sync | `lana-viseme`: short-time FFT energy + F1/F2 formants → vowel visemes, smoothed onto the avatar's mouth morphs — VRM via its `blendShapeMaster` a/i/u/e/o presets, glTF via morph-target name |
+| Avatar | Bevy 0.18 — native window, camera/light, idle sway, audio lip-sync. `LANA_AVATAR_PATH`: realistic `.glb`/`.gltf` (e.g. [Avaturn](https://avaturn.me)) or a `.vrm` (`bevy_vrm` 0.3) |
 | UI | `bevy_egui` 0.39 overlay — phase + rolling transcript |
 | Orchestrator | Tokio state machine: streaming TTS, conversation memory, barge-in |
 
@@ -84,13 +85,16 @@ cargo run --release --bin lana -- synth "Bonjour" out.wav    # TTS
 `LANA_AVATAR_PATH` (required for `converse`): a `.glb`/`.gltf` realistic
 avatar or a `.vrm`. `LANA_AVATAR_ROT_Y` (degrees, default `180`): corrective
 yaw — VRM 0.x faces away from the camera; set `0` (or another value) if your
-model then faces backwards. `LANA_AVATAR_ARM_DOWN` (degrees, default `0` = off,
-may be negative): VRM ships no animation, so the arms start in a T-pose
-("starfish"). This experimentally rotates the upper-arm bones; the correct
-axis is rig-dependent and not yet pinned, so it is off by default — set a
-value to experiment.
-(glTF avatars instead auto-play their first embedded clip if they have one;
-export the avatar with an idle animation, else it stays in bind pose.) Optional local overrides (power users): `LANA_MODEL_PATH` /
+model then faces backwards. A glTF avatar auto-plays its first embedded
+animation clip if it has one; a `.vrm` has none, so it renders in its bind
+pose (T-pose) unless it is itself already posed/animated — a proper VRM idle
+is Phase 7 (hand-computing arm rotations is not reliable across rigs).
+Lip-sync is automatic from the spoken audio. A `.vrm` is resolved from its
+own `blendShapeMaster` (the VRM spec's a/i/u/e/o presets — deterministic,
+no per-rig guessing); a glTF avatar is resolved by ARKit/VRoid morph-target
+name. Either way, if the mouth can't be resolved the reason is logged (it
+is never a silent failure).
+Optional local overrides (power users): `LANA_MODEL_PATH` /
 `LANA_TOKENIZER_PATH` (LLM GGUF + tokenizer.json), `LANA_STT_MODEL_DIR`
 (directory of Parakeet ONNX files). Voice override: `LANA_TTS_VOICE_EMBEDDING`
 (Kyutai predefined embedding, path or `hf://…`), `LANA_TTS_VOICE_PROMPT`

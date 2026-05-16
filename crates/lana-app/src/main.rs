@@ -415,6 +415,7 @@ async fn run_converse(av_tx: crossbeam_channel::Sender<AvatarUpdate>) -> Result<
                 OrchestratorEvent::LanaSaid(t) => {
                     (format!("lana: {t}\n"), AvatarUpdate::LanaSaid(t))
                 }
+                OrchestratorEvent::Visemes(v) => (String::new(), AvatarUpdate::Visemes(v)),
                 OrchestratorEvent::Notice(n) => (format!("· {n}\n"), AvatarUpdate::Notice(n)),
                 OrchestratorEvent::Error(e) => {
                     (format!("! {e}\n"), AvatarUpdate::Notice(format!("! {e}")))

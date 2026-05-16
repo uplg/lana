@@ -4875,6 +4875,8 @@ dependencies = [
  "bevy_egui",
  "bevy_vrm",
  "crossbeam-channel",
+ "lana-viseme",
+ "serde_json",
  "thiserror 2.0.18",
  "tracing",
 ]
@@ -4903,6 +4905,7 @@ dependencies = [
  "lana-stt",
  "lana-tts",
  "lana-vad",
+ "lana-viseme",
  "thiserror 2.0.18",
  "tokio",
  "tracing",
@@ -4953,7 +4956,7 @@ dependencies = [
 name = "lana-viseme"
 version = "0.1.0"
 dependencies = [
- "thiserror 2.0.18",
+ "rustfft",
 ]
 
 [[package]]

@@ -13,4 +13,4 @@ description = "Real-time audio-to-viseme analysis (FFT, formants F1/F2, onsets) 
 workspace = true
 
 [dependencies]
-thiserror.workspace = true
+rustfft.workspace = true

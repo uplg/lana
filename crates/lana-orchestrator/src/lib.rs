@@ -53,6 +53,10 @@ pub enum OrchestratorEvent {
     UserSaid(String),
     /// Lana's textual reply (before/while it is spoken).
     LanaSaid(String),
+    /// Lip-sync timeline for the sentence about to play (one entry per
+    /// `speak_chunk`); the avatar concatenates successive timelines so the
+    /// mouth tracks the continuous speaker output.
+    Visemes(Vec<lana_viseme::VisemeFrame>),
     /// Non-fatal notice (empty transcript, barge-in, ...).
     Notice(String),
     /// A per-turn error; the loop continues.
@@ -331,6 +335,13 @@ impl Orchestrator {
     async fn speak_chunk(&self, chunk: &str, events: &mpsc::Sender<OrchestratorEvent>) {
         match self.tts.synthesize(chunk).await {
             Ok(speech) => {
+                // Derive the lip-sync timeline from the exact PCM about to
+                // play and hand it to the avatar *before* enqueuing the
+                // audio, so the mouth starts with the sound.
+                let visemes = lana_viseme::analyze(&speech.pcm, speech.sample_rate);
+                if !visemes.is_empty() {
+                    emit(events, OrchestratorEvent::Visemes(visemes)).await;
+                }
                 if let Err(e) = self.out.enqueue_wav(&speech.wav) {
                     emit(events, OrchestratorEvent::Error(format!("audio: {e}"))).await;
                 }

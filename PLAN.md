@@ -11,8 +11,8 @@ must stay fully usable for other work while Lana runs.
 > streaming TTS, conversation memory (in-RAM), LLM = Luth-LFM2-1.2B.
 > LLM/STT/TTS all auto-download from Hugging Face (zero manual setup).
 > Avatar window done (Phase 5: Bevy + bevy_vrm + egui overlay); lip-sync
-> (Phase 6) not started. 100 % Rust stack: no Swift,
-> no Python, no cloud.
+> landed + instrumented (Phase 6, pending on-device morph ID); posture
+> deferred to Phase 7. 100 % Rust stack: no Swift, no Python, no cloud.
 
 ---
 
@@ -55,7 +55,7 @@ speakers. `LANA_BARGEIN=1` enables it (headphones / future AEC).
 | **STT** | **Parakeet-TDT-0.6B-v3** via `parakeet-rs` (ONNX Runtime `ort`, **CPU** EP) | SOTA multilingual FR STT, pure Rust via a C lib (no Swift). CoreML unstable for this model; CPU is fast on Apple Silicon | ~600 MB (ORT arena) |
 | **LLM** | **Luth-LFM2-1.2B** Q8_0 GGUF via `candle` (Metal) — `quantized_lfm2` | Liquid LFM2 French-specialised (SOTA French at this size), tiny (~1.25 GB), no thinking. candle 0.10.2 already ships the `lfm2` arch | ~1.3 GB |
 | **TTS** | **Kyutai Pocket TTS** — native Rust port (vendored `babybirdprd/pocket-tts`, candle/Metal), brought to upstream parity (#155) | Real **Estelle** FR voice via a predefined-voice embedding (token-free, ungated repo). Native per-Mimi-frame streaming | ~300 MB |
-| **Visemes** | FFT + F1/F2 formants + bilabial onsets → 12 ARKit visemes | *(not started)* pure Rust, ~10 ms latency | — |
+| **Visemes** | short-time FFT energy + F1/F2 formants → 5 vowel shapes + `Sil` | *(done, Phase 6)* pure-Rust DSP, unit-tested, no Bevy dep | — |
 | **Avatar** | **Bevy 0.18** (wgpu, native window); glTF scene or `bevy_vrm 0.3` | `LANA_AVATAR_PATH`: realistic `.glb`/`.gltf` (Avaturn) or `.vrm`. Camera/light/idle. Main thread (winit) | ~600 MB |
 | **UI** | `bevy_egui 0.39` overlay | Bottom panel: phase + rolling transcript. No Tauri/webview | ~0 |
 | **Orchestrator** | Tokio, channels, state machine | Idle / Listening / Thinking / Speaking + barge-in + memory | ~100 MB |
@@ -77,8 +77,8 @@ lana/
 │   ├── lana-stt/              # parakeet-rs (ort), HF auto-download, no Swift
 │   ├── lana-llm/              # candle + Luth-LFM2 GGUF (quantized_lfm2), HF auto-download, memory (Message/Role)
 │   ├── lana-tts/              # vendored pocket-tts, streaming, Estelle voice
-│   ├── lana-viseme/           # (stub)
-│   ├── lana-avatar/           # Bevy window: VRM + camera/light + idle + egui overlay
+│   ├── lana-viseme/           # pure-DSP audio→viseme (FFT energy + F1/F2), unit-tested
+│   ├── lana-avatar/           # Bevy window: VRM/glTF + camera/light + idle + lip-sync + auto-pose + egui overlay
 │   ├── lana-ui/               # (stub)
 │   ├── lana-orchestrator/     # state machine, channels, barge-in, history
 │   └── lana-app/              # binary: chat / transcribe / synth / converse
@@ -168,10 +168,37 @@ thread (winit requirement), bridged by a crossbeam `AvatarUpdate` channel
 (stdout transcript kept too). *Not GUI-tested in CI — render verified by
 the user on-device (like the audio ear-check).*
 
-### ⬜ Phase 6 — Lip-sync
-`lana-viseme`: FFT (rustfft) ~50 Hz on the TTS stream, F1/F2 formants,
-bilabial onsets → 12 ARKit visemes. Bevy interpolates blendshapes at
-60 fps. Hook onto the PCM stream lana-tts already produces.
+### 🚧 Phase 6 — Lip-sync (landed, instrumented; posture deferred)
+`lana-viseme` (pure-DSP, no Bevy dep, unit-tested): short-time Hann/FFT
+(rustfft) ~100 fps over the synthesised sentence PCM — per-frame RMS →
+mouth *openness*, F1/F2 spectral-peak guess → nearest of five vowel shapes
+(A/E/I/O/U) or `Sil`. Honest approximation (no forced alignment), enough
+for believable motion. `TtsEngine::Speech` now also carries the raw mono
+PCM; the orchestrator analyses it and emits `OrchestratorEvent::Visemes`
+*before* enqueuing the WAV, so the mouth starts with the sound. The avatar
+schedules successive per-sentence timelines back-to-back on the wall clock
+(so they concatenate with the continuous speaker queue) and drives the
+face's morph targets, smoothed per frame, on Bevy's canonical
+`MorphWeights`. **Resolution is loader-correct, not guessed**: the user's
+VRM exposed `MorphWeights` but `bevy_vrm`/`bevy_gltf_kun` drops glTF
+`extras.targetNames`, so name lookup returned `None` (and v1 only logged on
+*success* — a silent-miss bug, now fixed: every outcome logs the ground
+truth once). Fix: for a `.vrm` we parse the file's own
+`extensions.VRM.blendShapeMaster` (the VRM spec contract) for the a/i/u/e/o
+presets → authoritative morph indices, and bind them to the face
+`MorphWeights` (slot order is preserved by the loader even when names are
+not). glTF avatars keep ARKit/VRoid name resolution. Verified the indices
+against the actual model (`a→39 … o→43`, mesh 0); on-device confirmation
+that the mouth visibly moves still pending. (`bevy_vrm1` was evaluated — it
+is **VRM 1.0 only**, the model is VRM 0.0, so not applicable.) **Posture
+deferred to Phase 7**: two
+attempts at hand-computing the de-T-pose failed for genuine rig-dependent
+reasons (blind local-axis = arms up; world-space arc = arms vanish on
+mirror-scaled VRM rigs where the `GlobalTransform` decomposition is not a
+pure rotation). Skeletal posing of arbitrary VRMs without per-rig data is
+not deterministic — the clean fix is a real idle/retargeted animation, not
+bone math. Reverted to the visible bind pose; `LANA_AVATAR_ARM_DOWN`
+removed (no silent knob). *Not GUI-tested in CI — verified on-device.*
 
 ### ⬜ Phase 7 — Polish
 FR/EN voice picker in the UI, VRM hot-reload, idle mode (breathing,
@@ -301,23 +328,32 @@ For when the avatar work progresses; none blocks the voice loop.
 
 ## 10. Immediate next steps
 
-Recently delivered: **Phase 5 avatar window** (Bevy + glTF/VRM + egui
-overlay, Bevy on main thread; corrective base yaw via `LANA_AVATAR_ROT_Y`,
-default 180° — fixes the back-facing VRM the user hit), conversation
-memory (in-RAM), native streaming TTS, Estelle voice, default `tu` form,
-**LLM = Luth-LFM2-1.2B**, #143 (comma split), continuous streaming
-resampler, ~250 ms audio jitter buffer, LLM/STT/TTS HF auto-download
-(zero setup), dead-ref cleanup. Photoreal path researched and specified as
-**Phase 10** (FLAME-rigged 3DGS) — deferred until the mesh pipeline is
-complete (user's call).
+Recently delivered: **Phase 6 lip-sync landed** (pure-DSP `lana-viseme`,
+wall-clock viseme schedule; VRM resolved from its own `blendShapeMaster`,
+glTF by morph name) — pending on-device confirmation the mouth visibly
+moves; posture bone-math reverted (Phase 7 idle animation instead),
+**Phase 5 avatar window** (Bevy + glTF/VRM + egui overlay, Bevy on main
+thread; corrective base yaw via `LANA_AVATAR_ROT_Y`, default 180°),
+conversation memory (in-RAM), Estelle voice, default `tu` form,
+**LLM = Luth-LFM2-1.2B**, #143 (comma split), LLM/STT/TTS HF auto-download
+(zero setup). Audio path is the proven Phase-4 whole-sentence
+synth+enqueue (the streaming/jitter-buffer experiment was reverted; TTS
+`eos_threshold` default −2.0 to stop end-of-sentence truncation).
+Photoreal path researched and specified as **Phase 10** (FLAME-rigged
+3DGS) — deferred until the mesh pipeline is complete (user's call).
 
-1. Re-test `lana converse` (`--release`) with `LANA_AVATAR_PATH` set:
-   avatar now faces the camera (tune `LANA_AVATAR_ROT_Y` if needed),
-   transcript overlay tracks the conversation, memory/audio good.
-2. **Phase 6**: hook `lana-viseme` onto lana-tts's streaming PCM → drive
-   avatar mouth blendshapes (the Phase-5 window is ready to receive).
-3. **Phase 9**: cross-session memory — persist conversation + user profile
-   to disk so nothing is lost on restart.
-4. **Phase 8** (tools): MVP function-calling via the native Luth-LFM2 tools
+1. On-device run of `lana converse` (`--release`, `LANA_AVATAR_PATH` =
+   the VRM): confirm the mouth visibly moves while Lana speaks. Expect
+   `lip-sync: VRM blendShapeMaster viseme map loaded a=Some(39)…` then
+   `lip-sync: bound VRM blendShapeMaster visemes to MorphWeights`. If it
+   moves wrong/weak, tune `lana-viseme` thresholds; if not at all, the
+   loader's morph slot order differs from the glTF order (next: parse
+   `targetNames` and match by name instead of trusting slot order).
+2. **Phase 7** (posture + polish): a real VRM idle — load a VRMA/retargeted
+   humanoid clip through the animation system (the deterministic route),
+   not hand-computed bone rotations. Plus FR/EN voice picker, blink/gaze.
+3. **Phase 8** (tools): MVP function-calling via the native Luth-LFM2 tools
    format (`<|tool_list_start|>`/`<|tool_response_start|>`) on a single
    tool (light on/off via a local API).
+4. **Phase 9**: cross-session memory — persist conversation + user profile
+   to disk so nothing is lost on restart.

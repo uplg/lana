@@ -63,11 +63,17 @@ impl TtsConfig {
     }
 }
 
-/// Synthesised speech: a complete WAV byte buffer.
+/// Synthesised speech: a complete WAV byte buffer plus the raw mono PCM it
+/// was encoded from (so lip-sync can analyse the exact same audio without
+/// re-decoding the WAV).
 #[derive(Debug, Clone)]
 pub struct Speech {
     /// WAV-encoded audio bytes (model sample rate, mono, 16-bit).
     pub wav: Vec<u8>,
+    /// Mono `f32` PCM, same samples as `wav`, at `sample_rate`.
+    pub pcm: Vec<f32>,
+    /// Sample rate of `pcm` / `wav` (Hz).
+    pub sample_rate: u32,
 }
 
 struct Inner {
@@ -175,11 +181,22 @@ impl TtsEngine {
                     .map_err(|e| TtsError::Synthesis(format!("generate: {e}")))?
             };
 
+            // Mono PCM (mean over the channel dim; shape is
+            // `[channels, samples]`) — the same audio the WAV encodes, kept
+            // for lip-sync analysis.
+            let pcm = audio
+                .mean(0)
+                .and_then(|m| m.contiguous())
+                .and_then(|m| m.to_vec1::<f32>())
+                .map_err(|e| TtsError::Synthesis(format!("pcm decode: {e}")))?;
+
             let mut cursor = std::io::Cursor::new(Vec::new());
             pocket_tts::audio::write_wav_to_writer(&mut cursor, &audio, sample_rate)
                 .map_err(|e| TtsError::Synthesis(format!("wav encode: {e}")))?;
             Ok(Speech {
                 wav: cursor.into_inner(),
+                pcm,
+                sample_rate,
             })
         })
         .await

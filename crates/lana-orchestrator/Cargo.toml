@@ -22,3 +22,4 @@ lana-vad.workspace = true
 lana-stt.workspace = true
 lana-llm.workspace = true
 lana-tts.workspace = true
+lana-viseme.workspace = true

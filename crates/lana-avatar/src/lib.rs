@@ -31,14 +31,15 @@ use std::path::PathBuf;
 use bevy::gltf::GltfAssetLabel;
 use bevy::prelude::*;
 use bevy::scene::SceneInstanceReady;
-use bevy_vrm::BoneName;
 use bevy_vrm::VrmInstance;
 use bevy_vrm::VrmPlugins;
 use bevy_vrm::mtoon::MtoonSun;
 use crossbeam_channel::Receiver;
 
 mod error;
+mod mouth;
 mod overlay;
+mod vrm;
 
 pub use error::AvatarError;
 
@@ -53,6 +54,9 @@ pub enum AvatarUpdate {
     UserSaid(String),
     /// Lana's reply.
     LanaSaid(String),
+    /// Lip-sync timeline for the sentence now playing (appended to any
+    /// still-playing one so the mouth tracks continuous speech).
+    Visemes(Vec<lana_viseme::VisemeFrame>),
     /// A non-fatal notice.
     Notice(String),
 }
@@ -60,6 +64,12 @@ pub enum AvatarUpdate {
 /// Channel end the Bevy app drains each frame.
 #[derive(Resource)]
 struct Updates(Receiver<AvatarUpdate>);
+
+/// Authoritative viseme→morph-slot map read from a `.vrm`'s
+/// `blendShapeMaster` (present only for the VRM path; the glTF path
+/// resolves the mouth by morph-target name instead).
+#[derive(Resource)]
+struct VrmMouth(vrm::VrmVisemeMap);
 
 /// Which loader to use for the avatar asset.
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -80,11 +90,6 @@ struct AvatarAsset {
     /// their back to a +Z camera unless rotated 180°; glTF exports vary.
     /// Tunable via `LANA_AVATAR_ROT_Y` (degrees).
     yaw: f32,
-    /// VRM only: how far to drop the upper-arm bones from the T-pose bind
-    /// pose toward an A-pose (radians). VRM ships no animation, so without
-    /// this the avatar is a "starfish". Tunable via `LANA_AVATAR_ARM_DOWN`
-    /// (degrees); the exact axis is rig-dependent so this is approximate.
-    arm_down: f32,
 }
 
 /// Marker for the avatar root entity (so the idle system can find it).
@@ -157,15 +162,6 @@ pub fn run(avatar_path: PathBuf, updates: Receiver<AvatarUpdate>) -> Result<(), 
         .and_then(|v| v.parse::<f32>().ok())
         .unwrap_or(180.0)
         .to_radians();
-    // VRM ships no animation (bind pose = T-pose). Default OFF (0°): a
-    // blind Z-axis guess made it *worse* (arms up). Opt-in/tune via
-    // `LANA_AVATAR_ARM_DOWN` (degrees, may be negative) until the rig's
-    // correct axis is known from on-device feedback.
-    let arm_down = std::env::var("LANA_AVATAR_ARM_DOWN")
-        .ok()
-        .and_then(|v| v.parse::<f32>().ok())
-        .unwrap_or(0.0)
-        .to_radians();
 
     let mut app = App::new();
     app.add_plugins(DefaultPlugins.set(AssetPlugin {
@@ -174,18 +170,31 @@ pub fn run(avatar_path: PathBuf, updates: Receiver<AvatarUpdate>) -> Result<(), 
     }));
     if kind == AvatarKind::Vrm {
         app.add_plugins(VrmPlugins);
+        // bevy_vrm drops glTF morph-target names, so resolve the mouth
+        // from the VRM's own authoritative blendShapeMaster instead.
+        if let Some(map) = vrm::parse_vrm_visemes(&avatar_path) {
+            info!(
+                a = ?map.a, e = ?map.e, i = ?map.i, o = ?map.o, u = ?map.u,
+                "lip-sync: VRM blendShapeMaster viseme map loaded"
+            );
+            app.insert_resource(VrmMouth(map));
+        } else {
+            warn!(
+                "lip-sync: this VRM has no blendShapeMaster viseme presets — \
+                 the mouth cannot be resolved (use a glTF/ARKit avatar)"
+            );
+        }
     }
     app.add_plugins(overlay::OverlayPlugin)
         .insert_resource(Updates(updates))
-        .insert_resource(AvatarAsset {
-            file,
-            kind,
-            yaw,
-            arm_down,
-        })
+        .insert_resource(AvatarAsset { file, kind, yaw })
         .insert_resource(ClearColor(Color::srgb(0.10, 0.11, 0.13)))
+        .init_resource::<mouth::VisemeSchedule>()
         .add_systems(Startup, setup)
-        .add_systems(Update, (idle_motion, pose_vrm_arms))
+        .add_systems(
+            Update,
+            (idle_motion, mouth::resolve_mouth, mouth::drive_mouth),
+        )
         .run();
 
     Ok(())
@@ -287,25 +296,5 @@ fn play_idle_when_ready(
                 .entity(child)
                 .insert(AnimationGraphHandle(idle.graph.clone()));
         }
-    }
-}
-
-/// VRM path: VRM models ship no animation, so bind pose = T-pose
-/// ("starfish"). Drop the upper-arm bones toward an A-pose the moment
-/// `bevy_vrm` tags them (`Added<BoneName>`, fires once). The Z axis/sign
-/// is rig-dependent — `LANA_AVATAR_ARM_DOWN` (degrees, may be negative)
-/// tunes it. Untouched for glTF (no `BoneName` there).
-fn pose_vrm_arms(
-    avatar: Res<AvatarAsset>,
-    mut bones: Query<(&BoneName, &mut Transform), Added<BoneName>>,
-) {
-    for (name, mut tf) in &mut bones {
-        let sign = match name {
-            BoneName::LeftUpperArm => -1.0_f32,
-            BoneName::RightUpperArm => 1.0_f32,
-            _ => continue,
-        };
-        let drop = Quat::from_rotation_z(sign * avatar.arm_down);
-        tf.rotation = drop.mul_quat(tf.rotation);
     }
 }

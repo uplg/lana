@@ -4,6 +4,7 @@
 use bevy::prelude::*;
 use bevy_egui::{EguiContexts, EguiPlugin, EguiPrimaryContextPass, egui};
 
+use crate::mouth::VisemeSchedule;
 use crate::{AvatarUpdate, Updates};
 
 /// Most recent conversation lines kept for display.
@@ -40,13 +41,24 @@ impl Plugin for OverlayPlugin {
     }
 }
 
-/// Drain every pending [`AvatarUpdate`] into the [`Transcript`] (non-blocking).
-fn pump_updates(updates: Res<Updates>, mut transcript: ResMut<Transcript>) {
+/// Drain every pending [`AvatarUpdate`] into the [`Transcript`] and the
+/// lip-sync [`VisemeSchedule`] (non-blocking).
+fn pump_updates(
+    updates: Res<Updates>,
+    mut transcript: ResMut<Transcript>,
+    mut visemes: ResMut<VisemeSchedule>,
+) {
     while let Ok(update) = updates.0.try_recv() {
         match update {
             AvatarUpdate::Phase(p) => transcript.phase = p,
-            AvatarUpdate::UserSaid(t) => transcript.push(format!("you: {t}")),
+            AvatarUpdate::UserSaid(t) => {
+                // A new user turn: drop any lip-sync still queued from a
+                // reply that was cut short (barge-in).
+                visemes.clear();
+                transcript.push(format!("you: {t}"));
+            }
             AvatarUpdate::LanaSaid(t) => transcript.push(format!("lana: {t}")),
+            AvatarUpdate::Visemes(frames) => visemes.push(&frames),
             AvatarUpdate::Notice(n) => transcript.push(format!("· {n}")),
         }
     }
