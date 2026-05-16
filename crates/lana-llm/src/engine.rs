@@ -1,4 +1,5 @@
-//! [`LlmEngine`] — streaming chat over candle + quantized Qwen3 GGUF.
+//! [`LlmEngine`] — streaming chat over candle + a quantized LFM2 GGUF
+//! (Luth-LFM2: French-specialised Liquid LFM2).
 
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
@@ -6,8 +7,10 @@ use std::sync::Arc;
 use candle_core::quantized::gguf_file;
 use candle_core::{Device, Tensor};
 use candle_transformers::generation::{LogitsProcessor, Sampling};
-use candle_transformers::models::quantized_qwen3::ModelWeights;
+use candle_transformers::models::quantized_lfm2::ModelWeights;
 use candle_transformers::utils::apply_repeat_penalty;
+use hf_hub::Repo;
+use hf_hub::api::sync::ApiBuilder;
 use parking_lot::Mutex;
 use tokenizers::Tokenizer;
 use tokio::sync::mpsc;
@@ -17,7 +20,58 @@ use crate::error::LlmError;
 use crate::token_stream::TokenOutputStream;
 
 const TOKEN_CHANNEL_CAPACITY: usize = 256;
-const QWEN3_EOS: &str = "<|im_end|>";
+/// End-of-turn token: the `<|im_end|>` marker, `LFM2`/`Luth` eos.
+const EOS_TOKEN: &str = "<|im_end|>";
+
+/// Default model: French-specialised Luth-LFM2-1.2B, fetched from the Hub
+/// (cached) so nothing is downloaded by hand. `Q8_0` (~1.25 GB) is the
+/// smallest published quant and near-lossless for a 1.2 B model.
+const MODEL_REPO: &str = "kurakurai/Luth-LFM2-1.2B-GGUF";
+const MODEL_FILE: &str = "Luth-LFM2-1.2B-Q8_0.gguf";
+/// Tokenizer lives in the base (non-GGUF) repo.
+const TOKENIZER_REPO: &str = "kurakurai/Luth-LFM2-1.2B";
+const TOKENIZER_FILE: &str = "tokenizer.json";
+
+/// Resolve the GGUF weights and tokenizer paths.
+///
+/// An explicit local path (`model_env` / `tok_env`, from `LANA_MODEL_PATH`
+/// / `LANA_TOKENIZER_PATH`) wins; otherwise the default Luth-LFM2 assets
+/// are downloaded from the Hugging Face Hub and cached (no HF token
+/// required — public repos). Performs blocking network I/O on first run;
+/// call it off the async runtime (e.g. via `spawn_blocking`).
+///
+/// # Errors
+///
+/// Returns [`LlmError::Load`] if the Hub API or a download fails.
+pub fn resolve_model_assets(
+    model_env: Option<String>,
+    tok_env: Option<String>,
+) -> Result<(PathBuf, PathBuf), LlmError> {
+    let api = ApiBuilder::new()
+        .with_token(std::env::var("HF_TOKEN").ok())
+        .build()
+        .map_err(|e| LlmError::Load(format!("hf-hub api: {e}")))?;
+
+    let fetch = |repo: &str, file: &str| -> Result<PathBuf, LlmError> {
+        info!(
+            repo,
+            file, "resolving model asset from Hugging Face (cached)"
+        );
+        api.repo(Repo::model(repo.to_owned()))
+            .get(file)
+            .map_err(|e| LlmError::Load(format!("download {repo}/{file}: {e}")))
+    };
+
+    let model_path = match model_env {
+        Some(p) => PathBuf::from(p),
+        None => fetch(MODEL_REPO, MODEL_FILE)?,
+    };
+    let tokenizer_path = match tok_env {
+        Some(p) => PathBuf::from(p),
+        None => fetch(TOKENIZER_REPO, TOKENIZER_FILE)?,
+    };
+    Ok((model_path, tokenizer_path))
+}
 
 /// Static configuration of a [`LlmEngine`].
 #[derive(Debug, Clone)]
@@ -182,14 +236,15 @@ impl LlmEngine {
         let started = std::time::Instant::now();
         tokio::task::spawn_blocking(move || -> Result<(), LlmError> {
             let mut weights = model.lock();
-            weights.clear_kv_cache();
             let input = Tensor::new(&[0_u32, 1_u32, 2_u32], &device)
                 .and_then(|t| t.unsqueeze(0))
                 .map_err(|e| LlmError::Load(format!("warmup tensor: {e}")))?;
+            // index_pos = 0 with a multi-token input resets LFM2 state
+            // (attention KV ignored, short-conv recomputed) — no explicit
+            // cache-clear API and none needed.
             let _ = weights
                 .forward(&input, 0)
                 .map_err(|e| LlmError::Load(format!("warmup forward: {e}")))?;
-            weights.clear_kv_cache();
             drop(weights);
             Ok(())
         })
@@ -259,9 +314,9 @@ fn load_weights(model_path: &Path, tokenizer_path: &Path) -> Result<LoadedModel,
 
     let eos_token = tokenizer
         .get_vocab(true)
-        .get(QWEN3_EOS)
+        .get(EOS_TOKEN)
         .copied()
-        .ok_or_else(|| LlmError::Load(format!("eos token `{QWEN3_EOS}` not in vocab")))?;
+        .ok_or_else(|| LlmError::Load(format!("eos token `{EOS_TOKEN}` not in vocab")))?;
 
     let mut file =
         std::fs::File::open(model_path).map_err(|e| LlmError::Load(format!("open gguf: {e}")))?;
@@ -297,7 +352,12 @@ fn run_completion(
     params: GenerationConfig,
     tx: &mpsc::Sender<TokenChunk>,
 ) {
-    let mut prompt = format!("<|im_start|>system\n{system_prompt}<|im_end|>\n");
+    // LFM2 / Luth chat template (from the model's chat_template.jinja):
+    // a leading BOS, then ChatML turns, then the assistant open. No
+    // thinking tags — LFM2/Luth is a non-reasoning model. The full string
+    // (BOS + specials included) is tokenized with add_special_tokens=false,
+    // exactly as a chat template is meant to be applied.
+    let mut prompt = format!("<|startoftext|><|im_start|>system\n{system_prompt}<|im_end|>\n");
     for msg in history {
         prompt.push_str("<|im_start|>");
         prompt.push_str(msg.role.tag());
@@ -305,13 +365,9 @@ fn run_completion(
         prompt.push_str(&msg.content);
         prompt.push_str("<|im_end|>\n");
     }
-    // Qwen3 "no-think": prefilling a closed empty think block (exactly what
-    // the official chat template does for `enable_thinking=false`) makes the
-    // model generate the answer directly — no `<think>` tags in the output,
-    // lower TTFT, and no risk of a think-stripper swallowing the reply.
-    prompt.push_str("<|im_start|>assistant\n<think>\n\n</think>\n\n");
+    prompt.push_str("<|im_start|>assistant\n");
 
-    let encoded = match tokenizer.encode(prompt, true) {
+    let encoded = match tokenizer.encode(prompt, false) {
         Ok(e) => e,
         Err(e) => {
             warn!(error = %e, "tokenize failed");
@@ -324,7 +380,9 @@ fn run_completion(
     let mut tos = TokenOutputStream::new(tokenizer);
 
     let mut weights = model.lock();
-    weights.clear_kv_cache();
+    // No explicit cache reset: the first forward below is the full prompt
+    // at index_pos = 0, which resets LFM2 state (attention KV ignored,
+    // short-conv recomputed) between independent completions.
 
     let prompt_tensor =
         match Tensor::new(prompt_tokens.as_slice(), device).and_then(|t| t.unsqueeze(0)) {

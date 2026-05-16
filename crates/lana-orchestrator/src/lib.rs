@@ -316,6 +316,11 @@ impl Orchestrator {
 
         emit(events, OrchestratorEvent::LanaSaid(full)).await;
 
+        // All of this turn's audio is enqueued: release the jitter buffer
+        // so a reply shorter than the prebuffer (and the final tail) still
+        // plays out instead of stalling the drain wait.
+        self.out.flush_tail();
+
         if cfg.allow_bargein {
             self.speak_with_bargein(mic, cfg).await
         } else {

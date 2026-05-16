@@ -9,5 +9,7 @@ mod engine;
 mod error;
 mod token_stream;
 
-pub use engine::{EngineConfig, GenerationConfig, LlmEngine, Message, Role, TokenChunk};
+pub use engine::{
+    EngineConfig, GenerationConfig, LlmEngine, Message, Role, TokenChunk, resolve_model_assets,
+};
 pub use error::LlmError;

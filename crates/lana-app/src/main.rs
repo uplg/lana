@@ -7,11 +7,12 @@
 //! lana transcribe <path.wav> # one-shot STT smoke test (Phase 2)
 //! ```
 //!
-//! Chat mode reads the model from `LANA_MODEL_PATH` and tokenizer from
-//! `LANA_TOKENIZER_PATH`. STT reads its ONNX model dir from
-//! `LANA_STT_MODEL_DIR`, TTS its voice from `LANA_TTS_VOICE_PROMPT` or
-//! `LANA_TTS_CLONE_WAV`. Entirely Rust: candle (LLM/TTS) + ONNX Runtime
-//! (STT) + earshot (VAD). No Swift, no `CoreML`.
+//! The LLM (Luth-LFM2) and TTS (Pocket TTS / Estelle) auto-download from
+//! Hugging Face on first run (cached); nothing to fetch by hand.
+//! `LANA_MODEL_PATH` / `LANA_TOKENIZER_PATH` optionally override the LLM
+//! with local files. STT reads its ONNX model dir from `LANA_STT_MODEL_DIR`.
+//! Entirely Rust: candle (LLM/TTS) + ONNX Runtime (STT) + earshot (VAD).
+//! No Swift, no `CoreML`.
 
 #![forbid(unsafe_code)]
 
@@ -100,18 +101,22 @@ fn init_tracing() {
 async fn run_chat() -> Result<()> {
     info!("lana starting (chat repl)");
 
-    let config = load_llm_config_from_env()?;
+    let config = load_llm_config().await?;
     let engine = LlmEngine::new(config).await?;
     chat_repl(&engine).await
 }
 
-fn load_llm_config_from_env() -> Result<EngineConfig> {
-    let model_path = std::env::var("LANA_MODEL_PATH")
-        .map(PathBuf::from)
-        .context("LANA_MODEL_PATH not set (point it at the Qwen3 GGUF file)")?;
-    let tokenizer_path = std::env::var("LANA_TOKENIZER_PATH")
-        .map(PathBuf::from)
-        .context("LANA_TOKENIZER_PATH not set (point it at the tokenizer.json)")?;
+/// Build the LLM config. The default Luth-LFM2 weights + tokenizer are
+/// downloaded from Hugging Face (cached) on first run — nothing to fetch by
+/// hand. `LANA_MODEL_PATH` / `LANA_TOKENIZER_PATH` override with local
+/// files. The (possibly downloading) resolution runs off the async runtime.
+async fn load_llm_config() -> Result<EngineConfig> {
+    let model_env = std::env::var("LANA_MODEL_PATH").ok();
+    let tok_env = std::env::var("LANA_TOKENIZER_PATH").ok();
+    let (model_path, tokenizer_path) =
+        tokio::task::spawn_blocking(move || lana_llm::resolve_model_assets(model_env, tok_env))
+            .await
+            .context("llm asset resolve task")??;
 
     Ok(EngineConfig {
         model_path,
@@ -348,7 +353,7 @@ async fn run_converse() -> Result<()> {
 
     // Build every engine first (each loads its own model). STT/TTS/VAD pull
     // their CoreML models on first run; the LLM reads the GGUF from env.
-    let llm = LlmEngine::new(load_llm_config_from_env()?).await?;
+    let llm = LlmEngine::new(load_llm_config().await?).await?;
     let stt = SttEngine::new(stt_config_from_env()?).await?;
     let tts = TtsEngine::new(tts_config_from_env()).await?;
     let vad = VadEngine::new(VadConfig::default()).await?;

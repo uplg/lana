@@ -1946,6 +1946,7 @@ dependencies = [
  "candle-core 0.10.2",
  "candle-nn 0.10.2",
  "candle-transformers 0.10.2",
+ "hf-hub",
  "parking_lot",
  "thiserror 2.0.18",
  "tokenizers 0.22.2",

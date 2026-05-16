@@ -17,7 +17,7 @@ for other work while Lana runs (runtime footprint ≈ 2 GB).
 | Capture | `cpal` (CoreAudio) + custom windowed-sinc FIR decimator 48→16 kHz |
 | VAD | `earshot` — pure-Rust NN VAD, no ONNX, no model download |
 | STT | Parakeet-TDT-0.6B-v3 via `parakeet-rs` (ONNX Runtime / `ort`, CPU EP, pure Rust — **no Swift**) |
-| LLM | Qwen3-1.7B Q5_K_M GGUF via `candle` (Metal) |
+| LLM | Luth-LFM2-1.2B (French-specialised Liquid LFM2) Q8_0 GGUF via `candle` (Metal) |
 | TTS | Kyutai Pocket TTS, native Rust port (vendored `babybirdprd/pocket-tts` on `candle`/Metal), French `french_24l` + real **Estelle** voice |
 | Lip-sync | Real-time FFT + formants → 12 ARKit visemes *(not started)* |
 | Avatar | Bevy + `bevy_vrm` *(not started)* |
@@ -57,15 +57,18 @@ cargo build --release
 
 ## Run
 
-The LLM weights/tokenizer and STT model are loaded from local paths via env
-vars. The TTS model (`french_24l`) and the Estelle voice are downloaded from
-Hugging Face on first launch (ungated `pocket-tts-without-voice-cloning`
-repo — no HF token needed) and cached.
+The LLM (Luth-LFM2-1.2B) and TTS (Pocket TTS `french_24l` + the Estelle
+voice) are **downloaded from Hugging Face on first launch and cached** —
+nothing to fetch by hand, no HF token needed (public repos). Only the STT
+model dir is a required local path for now.
 
 ```sh
-export LANA_MODEL_PATH="$HOME/Library/Application Support/Lana/models/Qwen3-1.7B-Q5_K_M.gguf"
-export LANA_TOKENIZER_PATH="$HOME/Library/Application Support/Lana/models/tokenizer.json"
 export LANA_STT_MODEL_DIR="$HOME/Library/Application Support/Lana/stt"   # Parakeet ONNX dir
+
+# Optional: override the LLM with a local GGUF + tokenizer.json instead of
+# the auto-downloaded Luth-LFM2-1.2B (kurakurai/Luth-LFM2-1.2B-GGUF, Q8_0):
+# export LANA_MODEL_PATH=/path/to/model.gguf
+# export LANA_TOKENIZER_PATH=/path/to/tokenizer.json
 
 # Full voice loop (mic → STT → LLM → TTS → speaker), run in release for realtime:
 cargo run --release --bin lana -- converse

@@ -37,6 +37,16 @@ struct Shared {
     rs_prev: f32,
     /// Source rate the carried state applies to; a change resets it.
     rs_src: u32,
+    /// Jitter buffer: the realtime callback does not drain the queue until
+    /// it first holds `prebuffer` samples, and re-arms on underrun. This
+    /// stops the early-generation crackle (the callback would otherwise
+    /// greedily consume the first frame before the LLM→sentence→TTS
+    /// pipeline is primed, starving between the first short chunk and the
+    /// next). Cost: ~`prebuffer / device_rate` s of leading silence.
+    started: bool,
+    /// Samples to accumulate before playback starts / resumes (set once
+    /// from the device rate in [`AudioOutput::start`]).
+    prebuffer: usize,
 }
 
 /// Live audio output. One device/stream reused across utterances.
@@ -76,6 +86,8 @@ impl AudioOutput {
         );
 
         let shared = Arc::new(Mutex::new(Shared::default()));
+        // ~250 ms jitter buffer before playback starts/resumes.
+        shared.lock().prebuffer = (device_rate as usize) / 4;
         let running = Arc::new(AtomicBool::new(true));
         let cfg: cpal::StreamConfig = supported.config();
 
@@ -184,10 +196,20 @@ impl AudioOutput {
         let mut guard = self.shared.lock();
         guard.queue.clear();
         guard.generation = guard.generation.wrapping_add(1);
-        // Next utterance is unrelated audio: restart resampler continuity.
+        // Next utterance is unrelated audio: restart resampler continuity
+        // and re-arm the jitter buffer.
         guard.rs_phase = 0;
         guard.rs_prev = 0.0;
         guard.rs_src = 0;
+        guard.started = false;
+    }
+
+    /// Force the jitter buffer to release: play whatever is queued even if
+    /// it never reached the prebuffer threshold. Call once a turn's audio
+    /// has been fully enqueued so a reply shorter than the prebuffer (and
+    /// the final tail) still plays out instead of stalling.
+    pub fn flush_tail(&self) {
+        self.shared.lock().started = true;
     }
 
     /// `true` while there is still audio queued to play.
@@ -266,10 +288,30 @@ fn build_output_stream(
                 config,
                 move |out: &mut [f32], _: &cpal::OutputCallbackInfo| {
                     let mut guard = shared.lock();
+
+                    // Jitter buffer: stay silent until the queue is primed.
+                    if !guard.started {
+                        if guard.queue.len() >= guard.prebuffer {
+                            guard.started = true;
+                        } else {
+                            out.fill(0.0);
+                            return;
+                        }
+                    }
+
                     for frame in out.chunks_mut(channels) {
-                        let s = guard.queue.pop_front().unwrap_or(0.0);
-                        for slot in frame.iter_mut() {
-                            *slot = s;
+                        if let Some(s) = guard.queue.pop_front() {
+                            for slot in frame.iter_mut() {
+                                *slot = s;
+                            }
+                        } else {
+                            // Underrun: re-arm the jitter buffer so the next
+                            // audio re-primes instead of crackling, and emit
+                            // silence for the rest of this block.
+                            guard.started = false;
+                            for slot in frame.iter_mut() {
+                                *slot = 0.0;
+                            }
                         }
                     }
                     drop(guard);
