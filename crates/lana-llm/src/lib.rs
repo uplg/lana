@@ -1,7 +1,7 @@
-//! Local LLM inference for Lana using Qwen3 GGUF via candle.
+//! Local LLM inference for Lana via candle.
 //!
-//! Loads a quantised Qwen3 GGUF file (e.g. `Qwen3-1.7B-Q5_K_M.gguf`) onto
-//! Metal and exposes a streaming chat API consumable by the orchestrator.
+//! Loads a quantised LFM2 GGUF (Luth-LFM2, French-specialised) onto Metal
+//! and exposes a streaming chat API consumable by the orchestrator.
 
 #![forbid(unsafe_code)]
 

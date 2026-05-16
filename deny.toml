@@ -8,9 +8,9 @@ all-features = false
 [advisories]
 version = 2
 yanked = "deny"
-# Only flag unmaintained crates that are direct workspace dependencies; we
-# cannot patch unmaintained transitive deps pulled by heavy ML crates like
-# mistralrs without forking, and they carry no known security exposure.
+# Only flag unmaintained crates that are direct workspace dependencies;
+# unmaintained transitive deps pulled by heavy ML crates (candle, ort)
+# cannot be patched without forking and carry no known security exposure.
 unmaintained = "workspace"
 ignore = []
 
@@ -62,6 +62,6 @@ skip-tree = []
 unknown-registry = "deny"
 unknown-git = "deny"
 allow-registry = ["https://github.com/rust-lang/crates.io-index"]
-# fluidaudio-rs is git-only (not published on crates.io); pinned by commit in
-# the workspace Cargo.toml. Same org as the underlying Swift FluidAudio SDK.
+# No git dependencies: everything is crates.io or the vendored pocket-tts
+# (a `path` dep, not git).
 allow-git = []

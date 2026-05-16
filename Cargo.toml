@@ -92,11 +92,11 @@ rustfft = "6.4"
 # Numerics
 num-traits = "0.2"
 
-# Voice activity detection (pure Rust, no ONNX/Swift)
+# Voice activity detection (pure Rust NN, no model download)
 earshot = "1"
 
-# Speech-to-text: Parakeet-TDT-0.6B-v3 via ONNX Runtime (pure Rust, no
-# Swift). Model ONNX files from HF `istupakov/parakeet-tdt-0.6b-v3-onnx`.
+# Speech-to-text: Parakeet-TDT-0.6B-v3 via ONNX Runtime (pure Rust C lib).
+# Model ONNX files from HF `istupakov/parakeet-tdt-0.6b-v3-onnx`.
 parakeet-rs = "0.3"
 
 # LLM inference (candle, pure Rust, Metal-accelerated)
@@ -107,13 +107,9 @@ tokenizers = { version = "0.22", default-features = false, features = ["onig"] }
 hf-hub = "0.4"
 parking_lot = "0.12"
 
-# Apple MLX bindings (Kyutai Pocket TTS)
-mlx-rs = "0.25"
-
-# TTS: native Rust port of Kyutai Pocket TTS on candle (Metal). Gives the
-# real Kyutai voices (Estelle via a .safetensors voice prompt), working
-# native voice cloning, and a true streaming pipeline. Git-only; pinned by
-# commit.
+# TTS: native Rust port of Kyutai Pocket TTS on candle (Metal). Real
+# Kyutai voices (Estelle via a predefined-voice embedding) + a true
+# streaming pipeline. Vendored fork, depended on by `path`.
 pocket-tts = { path = "vendor/pocket-tts/crates/pocket-tts", version = "0.6", default-features = false }
 
 # Avatar / rendering

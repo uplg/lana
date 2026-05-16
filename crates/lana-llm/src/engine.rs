@@ -76,7 +76,7 @@ pub fn resolve_model_assets(
 /// Static configuration of a [`LlmEngine`].
 #[derive(Debug, Clone)]
 pub struct EngineConfig {
-    /// Absolute path to the GGUF file (e.g. `Qwen3-1.7B-Q5_K_M.gguf`).
+    /// Absolute path to the GGUF file (e.g. `Luth-LFM2-1.2B-Q8_0.gguf`).
     pub model_path: PathBuf,
     /// Absolute path to the tokenizer.json for the same model.
     pub tokenizer_path: PathBuf,

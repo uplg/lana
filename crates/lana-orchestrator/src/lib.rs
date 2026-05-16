@@ -6,9 +6,9 @@
 //! can interrupt (barge-in): detected speech cancels playback and starts a
 //! fresh turn immediately.
 //!
-//! Engines are injected pre-built (each owns its own `FluidAudio`/candle
-//! instance) so the orchestrator stays free of model-loading concerns and
-//! VAD can run concurrently with TTS for barge-in.
+//! Engines are injected pre-built (each owns its own model instance) so
+//! the orchestrator stays free of model-loading concerns and VAD can run
+//! concurrently with TTS for barge-in.
 
 #![forbid(unsafe_code)]
 

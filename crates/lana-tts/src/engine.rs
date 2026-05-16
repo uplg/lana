@@ -1,10 +1,8 @@
 //! [`TtsEngine`] — async facade over the native Rust Kyutai Pocket TTS
 //! (`pocket-tts` crate, candle/Metal).
 //!
-//! Replaces the `FluidAudio` `PocketTTS` path, whose voice/cloning pipeline was
-//! broken in 0.14.5. Here the real Kyutai voices load directly from their
-//! native `.safetensors` voice prompts (e.g. Estelle) and cloning runs the
-//! candle Mimi encoder.
+//! The real Kyutai voices load from a predefined-voice embedding (e.g.
+//! Estelle) and cloning runs the candle Mimi encoder.
 
 use std::path::PathBuf;
 use std::sync::Arc;

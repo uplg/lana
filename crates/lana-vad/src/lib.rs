@@ -1,7 +1,7 @@
 //! Voice activity detection and utterance segmentation for Lana.
 //!
-//! [`VadEngine`] wraps `FluidAudio`'s on-device VAD (its own instance, so it
-//! can run concurrently with STT/TTS for barge-in). [`UtteranceSegmenter`]
+//! [`VadEngine`] wraps `earshot`'s pure-Rust NN VAD (its own instance, so
+//! it can run concurrently with STT/TTS for barge-in). [`UtteranceSegmenter`]
 //! is a pure state machine turning per-chunk voice flags into
 //! start/end-of-turn [`VadEvent`]s.
 

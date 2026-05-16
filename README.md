@@ -33,7 +33,7 @@ crates/
 ├── lana-audio          # mic capture, FIR decimator, cancellable playback
 ├── lana-vad            # voice activity detection (earshot) + utterance segmenter
 ├── lana-stt            # speech-to-text (Parakeet via parakeet-rs / ort)
-├── lana-llm            # local LLM (candle + Qwen3 GGUF), streaming, memory
+├── lana-llm            # local LLM (candle + Luth-LFM2 GGUF), streaming, memory
 ├── lana-tts            # text-to-speech (native Pocket TTS), streaming
 ├── lana-viseme         # audio-to-viseme analysis (stub)
 ├── lana-avatar         # VRM rendering, blendshape control (stub)

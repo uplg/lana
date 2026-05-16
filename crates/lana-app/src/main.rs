@@ -30,18 +30,11 @@ use tokio::io::{AsyncBufReadExt as _, AsyncWriteExt as _, BufReader};
 use tracing::info;
 use tracing_subscriber::EnvFilter;
 
-// The system prompt steers Lana for the voice loop:
-//
-// - `/no_think` suppresses Qwen3's `<think>...</think>` chain-of-thought
-//   prefix; the `ThinkFilter` in `lana-llm` is a defensive net should the
-//   model ignore the directive on some prompts.
-// - The "plain spoken text" instruction discourages markdown formatting
-//   (code fences, bullet lists, asterisks) that would read terribly through
-//   the TTS layer. A markdown-to-voice post-processor will live in
-//   `lana-orchestrator` later for the cases the model ignores this.
-// Written in French on purpose: a small model (Qwen3-1.7B) anchors its
-// output language to the prompt language, so a French prompt sharply
-// reduces the English drift the user reported.
+// The system prompt steers Lana for the voice loop. The "plain spoken
+// text" instruction discourages markdown (code fences, bullet lists,
+// asterisks) that reads terribly through TTS. Written in French on
+// purpose: a small model anchors its output language to the prompt
+// language, so a French prompt sharply reduces English drift.
 const DEFAULT_SYSTEM_PROMPT: &str = "Tu es Lana, une assistante vocale \
     locale et amicale. Réponds TOUJOURS en français, jamais en anglais, \
     de façon concise et naturelle à l'oral : pas de markdown, pas de \
@@ -351,8 +344,9 @@ async fn run_synth(text: &str, out: &Path) -> Result<()> {
 async fn run_converse() -> Result<()> {
     info!("lana starting (converse — full voice loop)");
 
-    // Build every engine first (each loads its own model). STT/TTS/VAD pull
-    // their CoreML models on first run; the LLM reads the GGUF from env.
+    // Build every engine first (each loads its own model). LLM, STT and
+    // TTS auto-download their weights from Hugging Face on first run
+    // (cached); VAD (earshot) needs no model.
     let llm = LlmEngine::new(load_llm_config().await?).await?;
     let stt = SttEngine::new(load_stt_config().await?).await?;
     let tts = TtsEngine::new(tts_config_from_env()).await?;

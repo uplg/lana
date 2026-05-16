@@ -8,10 +8,10 @@ must stay fully usable for other work while Lana runs.
 
 > **Status (2026-05-16)**: phases 0→4 delivered and validated. Full French
 > voice loop works (`lana converse`), real **Estelle** voice, native
-> streaming TTS, conversation memory (in-RAM), LLM = Luth-LFM2-1.2B
-> (validated clearly better than Qwen3-1.7B). LLM/STT/TTS all auto-download
-> from Hugging Face (zero manual setup). Avatar / lip-sync (phases 5+) not
-> started. 100 % Rust stack: no Swift, no Python, no cloud.
+> streaming TTS, conversation memory (in-RAM), LLM = Luth-LFM2-1.2B.
+> LLM/STT/TTS all auto-download from Hugging Face (zero manual setup).
+> Avatar / lip-sync (phases 5+) not started. 100 % Rust stack: no Swift,
+> no Python, no cloud.
 
 ---
 
@@ -52,7 +52,7 @@ speakers. `LANA_BARGEIN=1` enables it (headphones / future AEC).
 | **Audio capture** | `cpal` (CoreAudio) + custom windowed-sinc FIR decimator 48→16 kHz | Low latency, pure Rust | — |
 | **VAD** | `earshot` (pure-Rust NN, 256-sample / 16 ms frames) | No ONNX, no model download, ~110 KiB | ~0 |
 | **STT** | **Parakeet-TDT-0.6B-v3** via `parakeet-rs` (ONNX Runtime `ort`, **CPU** EP) | SOTA multilingual FR STT, pure Rust via a C lib (no Swift). CoreML unstable for this model; CPU is fast on Apple Silicon | ~600 MB (ORT arena) |
-| **LLM** | **Luth-LFM2-1.2B** Q8_0 GGUF via `candle` (Metal) — `quantized_lfm2` | Liquid LFM2 French-specialised (SOTA French at this size), tiny (~1.25 GB), no thinking. candle 0.10.2 already ships the `lfm2` arch. Validated clearly better than Qwen3-1.7B | ~1.3 GB |
+| **LLM** | **Luth-LFM2-1.2B** Q8_0 GGUF via `candle` (Metal) — `quantized_lfm2` | Liquid LFM2 French-specialised (SOTA French at this size), tiny (~1.25 GB), no thinking. candle 0.10.2 already ships the `lfm2` arch | ~1.3 GB |
 | **TTS** | **Kyutai Pocket TTS** — native Rust port (vendored `babybirdprd/pocket-tts`, candle/Metal), brought to upstream parity (#155) | Real **Estelle** FR voice via a predefined-voice embedding (token-free, ungated repo). Native per-Mimi-frame streaming | ~300 MB |
 | **Visemes** | FFT + F1/F2 formants + bilabial onsets → 12 ARKit visemes | *(not started)* pure Rust, ~10 ms latency | — |
 | **Avatar** | **Bevy** + `bevy_vrm` (full Rust, wgpu, native window) | *(not started)* 100 % Rust, free VRM models | ~600 MB |
@@ -129,12 +129,12 @@ feature; candle is built with `metal`). `intel-mkl-src` is clarified as
 Workspace, strict lints, clean `cargo deny`, CI with no model downloads.
 
 ### ✅ Phase 1 — Text loop
-`candle` (Metal) + LLM GGUF, CLI `chat`. Started on Qwen3-1.7B
-(220-270 ms TTFT, ~60 tok/s); **switched to Luth-LFM2-1.2B**
+`candle` (Metal) + LLM GGUF, CLI `chat`. **Luth-LFM2-1.2B**
 (`quantized_lfm2`) — French-specialised Liquid LFM2, ChatML template
 (BOS `<|startoftext|>`), no thinking, implicit state reset via
-`index_pos == 0` (no `clear_kv_cache` API). Validated clearly better than
-Qwen3-1.7B for coherent French.
+`index_pos == 0` (no `clear_kv_cache` API). (History: started on a generic
+small model that looped/was incoherent in French; the French-specialised
+LFM2 fixed it — validated noticeably better in real use.)
 
 ### ✅ Phase 2 — Voice in
 `cpal` capture 48 kHz → FIR 16 kHz; `earshot` VAD; `parakeet-rs` STT
@@ -254,12 +254,11 @@ For when the avatar work progresses; none blocks the voice loop.
 ## 10. Immediate next steps
 
 Recently delivered: conversation memory (in-RAM), native streaming TTS,
-Estelle voice, default `tu` (informal) form, **LLM switched
-Qwen3-1.7B → Luth-LFM2-1.2B** (FR-specialised, `quantized_lfm2`,
-`ThinkFilter` removed), #143 (comma split), continuous streaming resampler,
-~250 ms audio jitter buffer (crackle fix), LLM/STT/TTS HF auto-download
-(zero setup). `LANA_TTS_EOS_THRESHOLD` lever (default -4.0 kept — lowering
-worsens truncation).
+Estelle voice, default `tu` (informal) form, **LLM = Luth-LFM2-1.2B**
+(FR-specialised, `quantized_lfm2`), #143 (comma split), continuous
+streaming resampler, ~250 ms audio jitter buffer (crackle fix),
+LLM/STT/TTS HF auto-download (zero setup). `LANA_TTS_EOS_THRESHOLD` lever
+(default -4.0 kept — lowering worsens truncation).
 
 1. Re-test `lana converse` (`--release`): memory, no empty replies, clean
    audio (no crackle), zero-setup downloads.

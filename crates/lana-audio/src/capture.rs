@@ -21,8 +21,12 @@ use crate::resample::Decimator3;
 pub const TARGET_RATE: u32 = 16_000;
 /// Input rate the capture path is built for (exact 3:1 to `TARGET_RATE`).
 const EXPECTED_INPUT_RATE: u32 = 48_000;
-/// Samples per emitted chunk: 256 ms at 16 kHz. Matches the `FluidAudio`
-/// VAD frame size so downstream alignment is trivial.
+/// Samples per emitted chunk: 256 ms at 16 kHz.
+///
+/// Chosen for the VAD/utterance-segmentation granularity (start/end-of-turn
+/// and the post-speech grace are tracked per chunk). Not a hard constraint;
+/// it just happens to be a whole multiple of `earshot`'s 256-sample frame
+/// (4096 = 16 × 256), so the VAD's `chunks_exact(256)` discards no audio.
 pub const CHUNK_SAMPLES: usize = 4_096;
 /// Bound on the chunk channel; back-pressure if the consumer stalls.
 const CHUNK_CHANNEL_CAPACITY: usize = 32;
