@@ -58,7 +58,7 @@ impl TtsConfig {
             voice,
             temperature: 0.7,
             lsd_decode_steps: 1,
-            eos_threshold: -4.0,
+            eos_threshold: -2.0,
         }
     }
 }
