@@ -20,6 +20,17 @@ use crate::error::AudioError;
 /// Sample rate `PocketTTS` emits.
 const TTS_RATE: u32 = 24_000;
 
+/// Output headroom: the neural vocoder occasionally emits samples slightly
+/// past ±1.0 (loud plosives) which hard-clip on the device — an audible
+/// click during speech. Scale down a touch, then hard-limit, so peaks are
+/// tamed without quieting normal speech.
+const HEADROOM: f32 = 0.97;
+
+/// Apply [`HEADROOM`] and clamp to the valid PCM range.
+fn limit(sample: f32) -> f32 {
+    (sample * HEADROOM).clamp(-1.0, 1.0)
+}
+
 /// Shared playback queue plus a generation counter. Bumping the generation
 /// (on cancel) invalidates whatever is still queued without tearing down
 /// the stream.
@@ -37,16 +48,6 @@ struct Shared {
     rs_prev: f32,
     /// Source rate the carried state applies to; a change resets it.
     rs_src: u32,
-    /// Jitter buffer: the realtime callback does not drain the queue until
-    /// it first holds `prebuffer` samples, and re-arms on underrun. This
-    /// stops the early-generation crackle (the callback would otherwise
-    /// greedily consume the first frame before the LLM→sentence→TTS
-    /// pipeline is primed, starving between the first short chunk and the
-    /// next). Cost: ~`prebuffer / device_rate` s of leading silence.
-    started: bool,
-    /// Samples to accumulate before playback starts / resumes (set once
-    /// from the device rate in [`AudioOutput::start`]).
-    prebuffer: usize,
 }
 
 /// Live audio output. One device/stream reused across utterances.
@@ -86,8 +87,6 @@ impl AudioOutput {
         );
 
         let shared = Arc::new(Mutex::new(Shared::default()));
-        // ~250 ms jitter buffer before playback starts/resumes.
-        shared.lock().prebuffer = (device_rate as usize) / 4;
         let running = Arc::new(AtomicBool::new(true));
         let cfg: cpal::StreamConfig = supported.config();
 
@@ -128,7 +127,9 @@ impl AudioOutput {
         let resampled = linear_resample(&mono, TTS_RATE, self.device_rate);
         {
             let mut guard = self.shared.lock();
-            guard.queue.extend(resampled);
+            // `limit` tames the rare vocoder samples past ±1 that would
+            // hard-clip on the device (the "slight click during speech").
+            guard.queue.extend(resampled.into_iter().map(limit));
         }
         Ok(())
     }
@@ -157,7 +158,7 @@ impl AudioOutput {
         }
 
         if src_rate == device_rate {
-            shared.queue.extend(samples.iter().copied());
+            shared.queue.extend(samples.iter().copied().map(limit));
             shared.rs_prev = last_sample;
             return;
         }
@@ -179,7 +180,7 @@ impl AudioOutput {
                     reason = "phase < device_rate ≤ 192 kHz is exact in f32"
                 )]
                 let frac = phase as f32 / device_rate as f32;
-                out.push((cur - prev).mul_add(frac, prev));
+                out.push(limit((cur - prev).mul_add(frac, prev)));
                 phase = phase.saturating_add(src_rate);
             }
             phase = phase.saturating_sub(device_rate);
@@ -196,20 +197,10 @@ impl AudioOutput {
         let mut guard = self.shared.lock();
         guard.queue.clear();
         guard.generation = guard.generation.wrapping_add(1);
-        // Next utterance is unrelated audio: restart resampler continuity
-        // and re-arm the jitter buffer.
+        // Next utterance is unrelated audio: restart resampler continuity.
         guard.rs_phase = 0;
         guard.rs_prev = 0.0;
         guard.rs_src = 0;
-        guard.started = false;
-    }
-
-    /// Force the jitter buffer to release: play whatever is queued even if
-    /// it never reached the prebuffer threshold. Call once a turn's audio
-    /// has been fully enqueued so a reply shorter than the prebuffer (and
-    /// the final tail) still plays out instead of stalling.
-    pub fn flush_tail(&self) {
-        self.shared.lock().started = true;
     }
 
     /// `true` while there is still audio queued to play.
@@ -288,30 +279,10 @@ fn build_output_stream(
                 config,
                 move |out: &mut [f32], _: &cpal::OutputCallbackInfo| {
                     let mut guard = shared.lock();
-
-                    // Jitter buffer: stay silent until the queue is primed.
-                    if !guard.started {
-                        if guard.queue.len() >= guard.prebuffer {
-                            guard.started = true;
-                        } else {
-                            out.fill(0.0);
-                            return;
-                        }
-                    }
-
                     for frame in out.chunks_mut(channels) {
-                        if let Some(s) = guard.queue.pop_front() {
-                            for slot in frame.iter_mut() {
-                                *slot = s;
-                            }
-                        } else {
-                            // Underrun: re-arm the jitter buffer so the next
-                            // audio re-primes instead of crackling, and emit
-                            // silence for the rest of this block.
-                            guard.started = false;
-                            for slot in frame.iter_mut() {
-                                *slot = 0.0;
-                            }
+                        let s = guard.queue.pop_front().unwrap_or(0.0);
+                        for slot in frame.iter_mut() {
+                            *slot = s;
                         }
                     }
                     drop(guard);

@@ -220,6 +220,40 @@ restarts. Persist it so Lana remembers across runs.
 - 100 % local, plain files, user-wipeable. Pairs with the Phase 7 UI
   (show/clear memory).
 
+### ⬜ Phase 10 — Photorealistic avatar (FLAME-rigged 3DGS)
+
+The glTF/VRM mesh path (Phases 5–6) caps at "realistic stylised". True
+photorealism today is **3D Gaussian Splatting**, not textured meshes
+(hence the lack of glTF photoreal sources). Researched, viable path that
+**reconciles photoreal with the locked constraints**:
+
+- **Representation**: a *FLAME-rigged* 3DGS head avatar, à la
+  **GaussianAvatars** (Qian et al., CVPR 2024 Highlight): Gaussians bound
+  to FLAME mesh triangles. Animation = deform the FLAME mesh by
+  shape/expr/jaw params; each Gaussian rigidly follows its parent triangle.
+  **Pure linear algebra at runtime — no neural network, no Python.** Also
+  see *3D Gaussian Blendshapes* / *RGBAvatar* (CVPR'25): blendshape-driven
+  Gaussians = exactly the Phase-6 viseme→blendshape model, but photoreal.
+- **Offline (one-time, outside the runtime — allowed)**: train the
+  per-subject avatar from a short face video (research tooling, Python/
+  CUDA). Produces a static Gaussian cloud + FLAME-triangle bindings.
+- **Runtime (Rust, lean, local, real-time)**: implement FLAME forward
+  (params → 5023 verts; LBS + corrective blendshapes — bounded, linear,
+  ~no Rust impl exists, to write) + per-Gaussian rigid transform from
+  parent triangles + render via a wgpu splat pipeline
+  (`bevy_gaussian_splatting`, or a custom pass). Drive FLAME jaw/expr from
+  the Phase-6 viseme analyser. Zero net, zero Python at runtime.
+- **Hard ceiling — licensing, not tech**: GaussianAvatars code is
+  CC-BY-NC-SA + a Toyota proprietary clause (**non-commercial**); FLAME
+  pre-2023 is research-NC, but **FLAME 2023 "Open" is CC-BY-4.0** (OK for
+  a personal/local project). The whole 3DGS-avatar research ecosystem is
+  NC → personal use fine, future commercialisation capped. We'd
+  re-implement only the (trivial, non-secret) runtime rigging math in
+  Rust, not reuse NC code.
+- **Effort**: multi-week research-grade subsystem; depends on the user
+  producing the avatar asset offline. De-risk with a spike first (Rust
+  FLAME forward + render a pretrained sample statically) before committing.
+
 ---
 
 ## 7. Non-priority refinements (debt / nice-to-have)
@@ -267,18 +301,21 @@ For when the avatar work progresses; none blocks the voice loop.
 
 ## 10. Immediate next steps
 
-Recently delivered: **Phase 5 avatar window** (Bevy + bevy_vrm + egui
-overlay, Bevy on main thread), conversation memory (in-RAM), native
-streaming TTS, Estelle voice, default `tu` form, **LLM = Luth-LFM2-1.2B**,
-#143 (comma split), continuous streaming resampler, ~250 ms audio jitter
-buffer (crackle fix), LLM/STT/TTS HF auto-download (zero setup), dead-ref
-cleanup. `LANA_TTS_EOS_THRESHOLD` lever (default -4.0 kept).
+Recently delivered: **Phase 5 avatar window** (Bevy + glTF/VRM + egui
+overlay, Bevy on main thread; corrective base yaw via `LANA_AVATAR_ROT_Y`,
+default 180° — fixes the back-facing VRM the user hit), conversation
+memory (in-RAM), native streaming TTS, Estelle voice, default `tu` form,
+**LLM = Luth-LFM2-1.2B**, #143 (comma split), continuous streaming
+resampler, ~250 ms audio jitter buffer, LLM/STT/TTS HF auto-download
+(zero setup), dead-ref cleanup. Photoreal path researched and specified as
+**Phase 10** (FLAME-rigged 3DGS) — deferred until the mesh pipeline is
+complete (user's call).
 
-1. Re-test `lana converse` (`--release`) with `LANA_AVATAR_PATH` set to a
-   realistic `.glb` (Avaturn export): window opens, the human avatar
-   renders, transcript overlay tracks the conversation, memory/audio good.
+1. Re-test `lana converse` (`--release`) with `LANA_AVATAR_PATH` set:
+   avatar now faces the camera (tune `LANA_AVATAR_ROT_Y` if needed),
+   transcript overlay tracks the conversation, memory/audio good.
 2. **Phase 6**: hook `lana-viseme` onto lana-tts's streaming PCM → drive
-   VRM blendshapes (the avatar window from Phase 5 is ready to receive).
+   avatar mouth blendshapes (the Phase-5 window is ready to receive).
 3. **Phase 9**: cross-session memory — persist conversation + user profile
    to disk so nothing is lost on restart.
 4. **Phase 8** (tools): MVP function-calling via the native Luth-LFM2 tools

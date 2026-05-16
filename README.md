@@ -82,7 +82,15 @@ cargo run --release --bin lana -- synth "Bonjour" out.wav    # TTS
 ```
 
 `LANA_AVATAR_PATH` (required for `converse`): a `.glb`/`.gltf` realistic
-avatar or a `.vrm`. Optional local overrides (power users): `LANA_MODEL_PATH` /
+avatar or a `.vrm`. `LANA_AVATAR_ROT_Y` (degrees, default `180`): corrective
+yaw — VRM 0.x faces away from the camera; set `0` (or another value) if your
+model then faces backwards. `LANA_AVATAR_ARM_DOWN` (degrees, default `0` = off,
+may be negative): VRM ships no animation, so the arms start in a T-pose
+("starfish"). This experimentally rotates the upper-arm bones; the correct
+axis is rig-dependent and not yet pinned, so it is off by default — set a
+value to experiment.
+(glTF avatars instead auto-play their first embedded clip if they have one;
+export the avatar with an idle animation, else it stays in bind pose.) Optional local overrides (power users): `LANA_MODEL_PATH` /
 `LANA_TOKENIZER_PATH` (LLM GGUF + tokenizer.json), `LANA_STT_MODEL_DIR`
 (directory of Parakeet ONNX files). Voice override: `LANA_TTS_VOICE_EMBEDDING`
 (Kyutai predefined embedding, path or `hf://…`), `LANA_TTS_VOICE_PROMPT`

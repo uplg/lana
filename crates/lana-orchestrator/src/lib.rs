@@ -316,11 +316,6 @@ impl Orchestrator {
 
         emit(events, OrchestratorEvent::LanaSaid(full)).await;
 
-        // All of this turn's audio is enqueued: release the jitter buffer
-        // so a reply shorter than the prebuffer (and the final tail) still
-        // plays out instead of stalling the drain wait.
-        self.out.flush_tail();
-
         if cfg.allow_bargein {
             self.speak_with_bargein(mic, cfg).await
         } else {
@@ -328,20 +323,20 @@ impl Orchestrator {
         }
     }
 
-    /// Synthesise one text chunk and stream it into the playback queue
-    /// frame-by-frame, so the first audio plays after the first Mimi frame
-    /// instead of waiting for the whole sentence. A failure is reported as
-    /// a notice and skipped so the rest of the reply still plays.
+    /// Synthesise one full sentence and enqueue it as one contiguous block.
+    /// Per-sentence (not per-frame): the first sentence still plays while
+    /// later sentences generate, but a sentence never starves mid-playback
+    /// — frame-level streaming made the audio cut constantly. A failure is
+    /// reported as a notice and skipped so the rest of the reply still plays.
     async fn speak_chunk(&self, chunk: &str, events: &mpsc::Sender<OrchestratorEvent>) {
-        let src_rate = self.tts.sample_rate();
-        let mut frames = self.tts.synthesize_stream(chunk);
-        while let Some(item) = frames.recv().await {
-            match item {
-                Ok(frame) => self.out.enqueue_pcm(&frame, src_rate),
-                Err(e) => {
-                    emit(events, OrchestratorEvent::Notice(format!("tts skip: {e}"))).await;
-                    break;
+        match self.tts.synthesize(chunk).await {
+            Ok(speech) => {
+                if let Err(e) = self.out.enqueue_wav(&speech.wav) {
+                    emit(events, OrchestratorEvent::Error(format!("audio: {e}"))).await;
                 }
+            }
+            Err(e) => {
+                emit(events, OrchestratorEvent::Notice(format!("tts skip: {e}"))).await;
             }
         }
     }
