@@ -32,6 +32,14 @@ allow = [
     "0BSD",
     "NCSA",
     "CDLA-Permissive-2.0",
+    # MIT No Attribution — OSI-approved, strictly more permissive than MIT.
+    # Used by a few crates in the Bevy dependency tree.
+    "MIT-0",
+    # Bevy's embedded default UI font (FiraSans / Ubuntu) ships under these
+    # font licenses. They are permissive and explicitly allow redistribution
+    # of the font; they cover the bundled font asset, not Lana's code.
+    "OFL-1.1",
+    "Ubuntu-font-1.0",
     # `intel-mkl-src` ships under the Intel Simplified Software License
     # (no SPDX id). pocket-tts depends on it unconditionally, but we build
     # candle with `metal` and never enable `mkl`, so no Intel MKL binary is

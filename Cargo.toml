@@ -112,8 +112,10 @@ parking_lot = "0.12"
 # streaming pipeline. Vendored fork, depended on by `path`.
 pocket-tts = { path = "vendor/pocket-tts/crates/pocket-tts", version = "0.6", default-features = false }
 
-# Avatar / rendering
-bevy = { version = "0.18", default-features = false }
+# Avatar / rendering. Default features on purpose: the avatar window uses
+# `DefaultPlugins` (winit, render, pbr, gltf, animation). Trimming the
+# feature set is a later optimisation (see PLAN §7).
+bevy = "0.18"
 bevy_egui = "0.39"
 bevy_vrm = "0.3"
 

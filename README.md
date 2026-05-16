@@ -1,11 +1,12 @@
 # Lana
 
 Local-only conversational voice agent. You speak, Lana answers out loud, in
-French (primary) or English. A real-time lip-syncing 3D avatar, local
-tool-calling (e.g. driving your own home API to switch the lights — still
-100 % local, just an HTTP call on your network) and cross-session memory
-are planned milestones; see [PLAN.md](./PLAN.md) (phases 8–9). Nothing
-leaves the machine — no cloud, no telemetry, no Python.
+French (primary) or English, as a 3D VRM avatar in a native window. Planned
+next: real-time lip-sync (Phase 6), cross-session memory (Phase 9) and
+local tool-calling (Phase 8 — e.g. driving your own home API to switch the
+lights, still 100 % local: just an HTTP call on your network). See
+[PLAN.md](./PLAN.md). Nothing leaves the machine — no cloud, no telemetry,
+no Python.
 
 Target hardware: MacBook Pro M1 Max 32 GB. The machine stays fully usable
 for other work while Lana runs (runtime footprint ≈ 2 GB).
@@ -19,9 +20,9 @@ for other work while Lana runs (runtime footprint ≈ 2 GB).
 | STT | Parakeet-TDT-0.6B-v3 via `parakeet-rs` (ONNX Runtime / `ort`, CPU EP, pure Rust — **no Swift**) |
 | LLM | Luth-LFM2-1.2B (French-specialised Liquid LFM2) Q8_0 GGUF via `candle` (Metal) |
 | TTS | Kyutai Pocket TTS, native Rust port (vendored `babybirdprd/pocket-tts` on `candle`/Metal), French `french_24l` + real **Estelle** voice |
-| Lip-sync | Real-time FFT + formants → 12 ARKit visemes *(not started)* |
-| Avatar | Bevy + `bevy_vrm` *(not started)* |
-| UI | `bevy_egui` overlay *(not started)* |
+| Lip-sync | Real-time FFT + formants → 12 ARKit visemes *(not started — Phase 6)* |
+| Avatar | Bevy 0.18 — native window, camera/light, idle. `LANA_AVATAR_PATH`: realistic `.glb`/`.gltf` (e.g. [Avaturn](https://avaturn.me)) or a `.vrm` (`bevy_vrm` 0.3) |
+| UI | `bevy_egui` 0.39 overlay — phase + rolling transcript |
 | Orchestrator | Tokio state machine: streaming TTS, conversation memory, barge-in |
 
 No Python. No Swift. No cloud. No telemetry.
@@ -63,17 +64,25 @@ first launch and cached** — nothing to fetch by hand, no HF token needed
 (public repos). First run pulls ≈ 1.25 GB (LLM) + ≈ 2.5 GB (STT) + the TTS
 model/voice; subsequent runs are instant from cache. **Zero setup:**
 
-```sh
-# Full voice loop (mic → STT → LLM → TTS → speaker), run in release for realtime:
-cargo run --release --bin lana -- converse
+`converse` opens the avatar window, so it needs an avatar model — set
+`LANA_AVATAR_PATH`. For a **realistic human**, export a `.glb` from
+[Avaturn](https://avaturn.me) (realistic, rigged, with ARKit
+blendshapes/visemes — feeds Phase 6 lip-sync). A `.vrm` (stylised, VRoid)
+also works.
 
-# One-shots:
+```sh
+# Full voice loop + avatar window (mic → STT → LLM → TTS → speaker + 3D
+# avatar with a live transcript overlay). Run in release for realtime:
+LANA_AVATAR_PATH=/path/to/avatar.glb cargo run --release --bin lana -- converse
+
+# One-shots (no window, no avatar needed):
 cargo run --release --bin lana -- chat                       # text REPL
 cargo run --release --bin lana -- transcribe <in.wav>        # STT
 cargo run --release --bin lana -- synth "Bonjour" out.wav    # TTS
 ```
 
-Optional local overrides (power users): `LANA_MODEL_PATH` /
+`LANA_AVATAR_PATH` (required for `converse`): a `.glb`/`.gltf` realistic
+avatar or a `.vrm`. Optional local overrides (power users): `LANA_MODEL_PATH` /
 `LANA_TOKENIZER_PATH` (LLM GGUF + tokenizer.json), `LANA_STT_MODEL_DIR`
 (directory of Parakeet ONNX files). Voice override: `LANA_TTS_VOICE_EMBEDDING`
 (Kyutai predefined embedding, path or `hf://…`), `LANA_TTS_VOICE_PROMPT`

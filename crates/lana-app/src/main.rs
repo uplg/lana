@@ -1,10 +1,10 @@
 //! Lana — entry point.
 //!
-//! Two subcommands for now:
-//!
 //! ```text
-//! lana                       # interactive chat REPL (Phase 1)
-//! lana transcribe <path.wav> # one-shot STT smoke test (Phase 2)
+//! lana                        # interactive chat REPL
+//! lana transcribe <path.wav>  # one-shot STT
+//! lana synth <text> <out.wav> # one-shot TTS
+//! lana converse               # full voice loop + avatar window
 //! ```
 //!
 //! The LLM (Luth-LFM2), STT (Parakeet-TDT v3) and TTS (Pocket TTS /
@@ -21,6 +21,7 @@ use std::time::{Duration, Instant};
 
 use anyhow::{Context, Result, bail};
 use lana_audio::{AudioOutput, MicCapture};
+use lana_avatar::AvatarUpdate;
 use lana_llm::{EngineConfig, GenerationConfig, LlmEngine, Message};
 use lana_orchestrator::{Orchestrator, OrchestratorConfig, OrchestratorEvent, Phase};
 use lana_stt::{SttConfig, SttEngine};
@@ -41,17 +42,20 @@ const DEFAULT_SYSTEM_PROMPT: &str = "Tu es Lana, une assistante vocale \
     listes, pas d'astérisques, pas de blocs de code. Tutoie toujours \
     l'utilisateur, ne le vouvoie jamais.";
 
-#[tokio::main]
-async fn main() -> Result<()> {
+fn main() -> Result<()> {
     init_tracing();
 
     let mut args = std::env::args().skip(1);
-    match args.next().as_deref() {
+    let sub = args.next();
+    match sub.as_deref() {
+        // Avatar window: Bevy/winit must own the process main thread
+        // (macOS requirement), so this path does not use `block_on`.
+        Some("converse") => run_converse_windowed(),
         Some("transcribe") => {
             let path = args
                 .next()
                 .context("usage: lana transcribe <path-to-audio-file>")?;
-            run_transcribe(&PathBuf::from(path)).await
+            block_on(run_transcribe(&PathBuf::from(path)))
         }
         Some("synth") => {
             let text = args
@@ -60,19 +64,58 @@ async fn main() -> Result<()> {
             let out = args
                 .next()
                 .context("usage: lana synth <text> <output.wav>")?;
-            run_synth(&text, &PathBuf::from(out)).await
+            block_on(run_synth(&text, &PathBuf::from(out)))
         }
-        // Boxed: builds every engine inline, so the future is large; keep
-        // it off the stack.
-        Some("converse") => Box::pin(run_converse()).await,
         Some(other) if !["chat", ""].contains(&other) => {
             bail!(
                 "unknown subcommand `{other}` \
                  (expected `chat`, `transcribe`, `synth` or `converse`)"
             );
         }
-        _ => run_chat().await,
+        _ => block_on(run_chat()),
     }
+}
+
+/// Build a multi-thread Tokio runtime and drive `fut` to completion. Used
+/// by the non-windowed subcommands; the avatar `converse` path keeps the
+/// main thread for Bevy and runs its runtime on a side thread instead.
+fn block_on<F>(fut: F) -> Result<()>
+where
+    F: Future<Output = Result<()>>,
+{
+    tokio::runtime::Builder::new_multi_thread()
+        .enable_all()
+        .build()
+        .context("building tokio runtime")?
+        .block_on(fut)
+}
+
+/// `converse` with the avatar window: the orchestrator (engines, mic, the
+/// async loop) runs on a side thread with its own Tokio runtime, while
+/// Bevy owns the main thread. Conversation state crosses over a channel.
+fn run_converse_windowed() -> Result<()> {
+    let avatar_path = std::env::var("LANA_AVATAR_PATH")
+        .map(PathBuf::from)
+        .context(
+            "LANA_AVATAR_PATH not set (path to a .glb/.gltf realistic avatar — \
+         e.g. exported from avaturn.me — or a .vrm)",
+        )?;
+
+    let (av_tx, av_rx) = crossbeam_channel::unbounded::<AvatarUpdate>();
+
+    let _orchestrator = std::thread::Builder::new()
+        .name("lana-orchestrator".to_owned())
+        .spawn(move || {
+            // Boxed: builds every engine inline, so the future is large.
+            if let Err(e) = block_on(Box::pin(run_converse(av_tx))) {
+                tracing::error!(error = %e, "converse loop stopped");
+            }
+        })
+        .context("spawning orchestrator thread")?;
+
+    // Blocks until the window closes; the process then exits, ending the
+    // orchestrator thread with it.
+    lana_avatar::run(avatar_path, av_rx).map_err(|e| anyhow::anyhow!("avatar: {e}"))
 }
 
 fn init_tracing() {
@@ -341,7 +384,7 @@ async fn run_synth(text: &str, out: &Path) -> Result<()> {
 
 // ---- converse (phase 4: full voice loop) ----------------------------------
 
-async fn run_converse() -> Result<()> {
+async fn run_converse(av_tx: crossbeam_channel::Sender<AvatarUpdate>) -> Result<()> {
     info!("lana starting (converse — full voice loop)");
 
     // Build every engine first (each loads its own model). LLM, STT and
@@ -357,19 +400,30 @@ async fn run_converse() -> Result<()> {
 
     let (event_tx, mut event_rx) = tokio::sync::mpsc::channel::<OrchestratorEvent>(64);
 
-    // Print events as they arrive.
+    // Print events to stdout and forward them to the avatar overlay.
     let printer = tokio::spawn(async move {
         let mut stdout = tokio::io::stdout();
         while let Some(ev) = event_rx.recv().await {
-            let line = match ev {
-                OrchestratorEvent::Phase(p) => format!("[{}]\n", phase_label(p)),
-                OrchestratorEvent::UserSaid(t) => format!("you: {t}\n"),
-                OrchestratorEvent::LanaSaid(t) => format!("lana: {t}\n"),
-                OrchestratorEvent::Notice(n) => format!("· {n}\n"),
-                OrchestratorEvent::Error(e) => format!("! {e}\n"),
+            let (line, update) = match ev {
+                OrchestratorEvent::Phase(p) => (
+                    format!("[{}]\n", phase_label(p)),
+                    AvatarUpdate::Phase(phase_label(p).to_owned()),
+                ),
+                OrchestratorEvent::UserSaid(t) => {
+                    (format!("you: {t}\n"), AvatarUpdate::UserSaid(t))
+                }
+                OrchestratorEvent::LanaSaid(t) => {
+                    (format!("lana: {t}\n"), AvatarUpdate::LanaSaid(t))
+                }
+                OrchestratorEvent::Notice(n) => (format!("· {n}\n"), AvatarUpdate::Notice(n)),
+                OrchestratorEvent::Error(e) => {
+                    (format!("! {e}\n"), AvatarUpdate::Notice(format!("! {e}")))
+                }
             };
             let _ = stdout.write_all(line.as_bytes()).await;
             let _ = stdout.flush().await;
+            // Unbounded channel: never blocks; ignore if the window closed.
+            let _ = av_tx.send(update);
         }
     });
 

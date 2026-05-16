@@ -10,7 +10,8 @@ must stay fully usable for other work while Lana runs.
 > voice loop works (`lana converse`), real **Estelle** voice, native
 > streaming TTS, conversation memory (in-RAM), LLM = Luth-LFM2-1.2B.
 > LLM/STT/TTS all auto-download from Hugging Face (zero manual setup).
-> Avatar / lip-sync (phases 5+) not started. 100 % Rust stack: no Swift,
+> Avatar window done (Phase 5: Bevy + bevy_vrm + egui overlay); lip-sync
+> (Phase 6) not started. 100 % Rust stack: no Swift,
 > no Python, no cloud.
 
 ---
@@ -55,8 +56,8 @@ speakers. `LANA_BARGEIN=1` enables it (headphones / future AEC).
 | **LLM** | **Luth-LFM2-1.2B** Q8_0 GGUF via `candle` (Metal) — `quantized_lfm2` | Liquid LFM2 French-specialised (SOTA French at this size), tiny (~1.25 GB), no thinking. candle 0.10.2 already ships the `lfm2` arch | ~1.3 GB |
 | **TTS** | **Kyutai Pocket TTS** — native Rust port (vendored `babybirdprd/pocket-tts`, candle/Metal), brought to upstream parity (#155) | Real **Estelle** FR voice via a predefined-voice embedding (token-free, ungated repo). Native per-Mimi-frame streaming | ~300 MB |
 | **Visemes** | FFT + F1/F2 formants + bilabial onsets → 12 ARKit visemes | *(not started)* pure Rust, ~10 ms latency | — |
-| **Avatar** | **Bevy** + `bevy_vrm` (full Rust, wgpu, native window) | *(not started)* 100 % Rust, free VRM models | ~600 MB |
-| **UI** | `bevy_egui` overlay | *(not started)* no Tauri/webview | ~0 |
+| **Avatar** | **Bevy 0.18** (wgpu, native window); glTF scene or `bevy_vrm 0.3` | `LANA_AVATAR_PATH`: realistic `.glb`/`.gltf` (Avaturn) or `.vrm`. Camera/light/idle. Main thread (winit) | ~600 MB |
+| **UI** | `bevy_egui 0.39` overlay | Bottom panel: phase + rolling transcript. No Tauri/webview | ~0 |
 | **Orchestrator** | Tokio, channels, state machine | Idle / Listening / Thinking / Speaking + barge-in + memory | ~100 MB |
 
 Locked-in rationale for each choice: see project memory `lana-stack`,
@@ -77,7 +78,7 @@ lana/
 │   ├── lana-llm/              # candle + Luth-LFM2 GGUF (quantized_lfm2), HF auto-download, memory (Message/Role)
 │   ├── lana-tts/              # vendored pocket-tts, streaming, Estelle voice
 │   ├── lana-viseme/           # (stub)
-│   ├── lana-avatar/           # (stub)
+│   ├── lana-avatar/           # Bevy window: VRM + camera/light + idle + egui overlay
 │   ├── lana-ui/               # (stub)
 │   ├── lana-orchestrator/     # state machine, channels, barge-in, history
 │   └── lana-app/              # binary: chat / transcribe / synth / converse
@@ -150,9 +151,22 @@ per-Mimi-frame streaming. CLI `synth`.
 `lana-orchestrator`: Tokio state machine, barge-in (opt-in), streaming TTS,
 **multi-turn conversation memory** (in-RAM, bounded). CLI `converse`.
 
-### ⬜ Phase 5 — Static avatar
-`lana-avatar`: Bevy + `bevy_vrm`, load a `.vrm`, camera/lighting, idle.
-`bevy_egui` overlay (transcript + settings). Single window.
+### ✅ Phase 5 — Static avatar
+`lana-avatar`: Bevy 0.18 + `bevy_egui` 0.39 + `bevy_vrm` 0.3 (versions
+verified mutually compatible). Single native window: 3D camera, directional
+light, the avatar from `LANA_AVATAR_PATH`, gentle idle (sway + breathing),
+and a `bevy_egui` bottom panel showing the live phase + rolling transcript.
+**Two avatar paths, dispatched by extension** (the asset root is pointed at
+the model's own directory so any absolute path works): `.glb`/`.gltf` →
+native Bevy scene for a **realistic human** (e.g. an Avaturn export — rig +
+ARKit blendshapes/visemes ready for Phase 6 lip-sync; no spring bones);
+`.vrm` → `bevy_vrm` (stylised VTuber, spring bones for free). The VRM
+ecosystem is anime-centric by origin, so realistic = the glTF path.
+`lana-app` restructured: dropped `#[tokio::main]`; `converse` runs the
+orchestrator on a side thread (own Tokio runtime) and Bevy on the main
+thread (winit requirement), bridged by a crossbeam `AvatarUpdate` channel
+(stdout transcript kept too). *Not GUI-tested in CI — render verified by
+the user on-device (like the audio ear-check).*
 
 ### ⬜ Phase 6 — Lip-sync
 `lana-viseme`: FFT (rustfft) ~50 Hz on the TTS stream, F1/F2 formants,
@@ -253,20 +267,20 @@ For when the avatar work progresses; none blocks the voice loop.
 
 ## 10. Immediate next steps
 
-Recently delivered: conversation memory (in-RAM), native streaming TTS,
-Estelle voice, default `tu` (informal) form, **LLM = Luth-LFM2-1.2B**
-(FR-specialised, `quantized_lfm2`), #143 (comma split), continuous
-streaming resampler, ~250 ms audio jitter buffer (crackle fix),
-LLM/STT/TTS HF auto-download (zero setup). `LANA_TTS_EOS_THRESHOLD` lever
-(default -4.0 kept — lowering worsens truncation).
+Recently delivered: **Phase 5 avatar window** (Bevy + bevy_vrm + egui
+overlay, Bevy on main thread), conversation memory (in-RAM), native
+streaming TTS, Estelle voice, default `tu` form, **LLM = Luth-LFM2-1.2B**,
+#143 (comma split), continuous streaming resampler, ~250 ms audio jitter
+buffer (crackle fix), LLM/STT/TTS HF auto-download (zero setup), dead-ref
+cleanup. `LANA_TTS_EOS_THRESHOLD` lever (default -4.0 kept).
 
-1. Re-test `lana converse` (`--release`): memory, no empty replies, clean
-   audio (no crackle), zero-setup downloads.
-2. **Phase 5**: start `lana-avatar` (Bevy + bevy_vrm), load a VRM, window +
-   idle, egui transcript overlay.
+1. Re-test `lana converse` (`--release`) with `LANA_AVATAR_PATH` set to a
+   realistic `.glb` (Avaturn export): window opens, the human avatar
+   renders, transcript overlay tracks the conversation, memory/audio good.
+2. **Phase 6**: hook `lana-viseme` onto lana-tts's streaming PCM → drive
+   VRM blendshapes (the avatar window from Phase 5 is ready to receive).
 3. **Phase 9**: cross-session memory — persist conversation + user profile
-   to disk so nothing is lost on restart (can land before/after the avatar).
-4. Phase 6: hook `lana-viseme` onto lana-tts's streaming PCM.
-5. **Phase 8** (tools): MVP function-calling via the native Luth-LFM2 tools
+   to disk so nothing is lost on restart.
+4. **Phase 8** (tools): MVP function-calling via the native Luth-LFM2 tools
    format (`<|tool_list_start|>`/`<|tool_response_start|>`) on a single
    tool (light on/off via a local API).
