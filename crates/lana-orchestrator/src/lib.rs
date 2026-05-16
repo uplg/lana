@@ -17,7 +17,7 @@ mod error;
 use std::time::{Duration, Instant};
 
 use lana_audio::AudioOutput;
-use lana_llm::LlmEngine;
+use lana_llm::{LlmEngine, Message};
 use lana_stt::SttEngine;
 use lana_tts::TtsEngine;
 use lana_vad::{SegmenterConfig, UtteranceSegmenter, VadEngine, VadEvent};
@@ -25,6 +25,11 @@ use tokio::sync::mpsc;
 use tracing::{info, warn};
 
 pub use error::OrchestratorError;
+
+/// Conversation turns kept as LLM memory. Bounded so a long session does
+/// not grow the prompt without limit (the system prompt is always kept,
+/// separately, by the engine).
+const MAX_HISTORY_MSGS: usize = 24;
 
 /// Coarse conversational phase, surfaced to the UI/CLI.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -181,6 +186,7 @@ impl Orchestrator {
     ) -> Result<(), OrchestratorError> {
         let mut segmenter = UtteranceSegmenter::new(config.segmenter);
         let mut utterance: Vec<f32> = Vec::new();
+        let mut history: Vec<Message> = Vec::new();
         emit(&events, OrchestratorEvent::Phase(Phase::Idle)).await;
 
         // A barge-in hands back the chunk that interrupted Lana; it seeds
@@ -212,7 +218,10 @@ impl Orchestrator {
                 VadEvent::SpeechEnded => {
                     utterance.extend_from_slice(&chunk);
                     let audio = std::mem::take(&mut utterance);
-                    match self.handle_turn(audio, &mut mic, &events, &config).await {
+                    match self
+                        .handle_turn(audio, &mut mic, &events, &config, &mut history)
+                        .await
+                    {
                         TurnEnd::Completed => {
                             emit(&events, OrchestratorEvent::Phase(Phase::Idle)).await;
                         }
@@ -234,6 +243,7 @@ impl Orchestrator {
         mic: &mut mpsc::Receiver<Vec<f32>>,
         events: &mpsc::Sender<OrchestratorEvent>,
         cfg: &OrchestratorConfig,
+        history: &mut Vec<Message>,
     ) -> TurnEnd {
         emit(events, OrchestratorEvent::Phase(Phase::Thinking)).await;
 
@@ -255,10 +265,13 @@ impl Orchestrator {
         }
         emit(events, OrchestratorEvent::UserSaid(transcript.clone())).await;
 
-        // Stream the LLM, and synthesise+enqueue each speakable chunk as
-        // soon as it forms so the first audio starts long before the full
-        // reply is generated.
-        let mut rx = self.llm.stream(&transcript);
+        // Record the user turn so Lana has conversational memory.
+        history.push(Message::user(transcript));
+
+        // Stream the LLM over the whole history, and synthesise+enqueue
+        // each speakable chunk as soon as it forms so the first audio
+        // starts long before the full reply is generated.
+        let mut rx = self.llm.stream(history);
         let mut buf = String::new();
         let mut full = String::new();
         let mut spoke = false;

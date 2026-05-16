@@ -66,6 +66,52 @@ impl Default for GenerationConfig {
     }
 }
 
+/// Who authored a conversation turn (the system prompt is configured
+/// separately on the engine, so it is not represented here).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Role {
+    /// The human speaker.
+    User,
+    /// Lana's own prior replies (fed back so she has memory).
+    Assistant,
+}
+
+impl Role {
+    const fn tag(self) -> &'static str {
+        match self {
+            Self::User => "user",
+            Self::Assistant => "assistant",
+        }
+    }
+}
+
+/// One conversation turn in the running history.
+#[derive(Debug, Clone)]
+pub struct Message {
+    /// Turn author.
+    pub role: Role,
+    /// Turn text.
+    pub content: String,
+}
+
+impl Message {
+    /// A user turn.
+    pub fn user(content: impl Into<String>) -> Self {
+        Self {
+            role: Role::User,
+            content: content.into(),
+        }
+    }
+
+    /// An assistant (Lana) turn.
+    pub fn assistant(content: impl Into<String>) -> Self {
+        Self {
+            role: Role::Assistant,
+            content: content.into(),
+        }
+    }
+}
+
 /// One streamed delta of generated text plus a terminal flag.
 #[derive(Debug, Clone)]
 pub struct TokenChunk {
@@ -154,20 +200,22 @@ impl LlmEngine {
         Ok(())
     }
 
-    /// Send a user prompt and receive a stream of [`TokenChunk`]s.
+    /// Send the full conversation `history` (oldest → newest, ending with
+    /// the latest user turn) and receive a stream of [`TokenChunk`]s. The
+    /// caller owns the history so Lana has memory across turns.
     ///
     /// A terminal chunk with `is_final == true` is always sent before the
     /// channel closes (even on mid-stream error). Each call clears the KV
-    /// cache and runs a single completion.
+    /// cache and re-encodes the whole history (stateless completion).
     #[must_use]
-    pub fn stream(&self, user_prompt: &str) -> mpsc::Receiver<TokenChunk> {
+    pub fn stream(&self, history: &[Message]) -> mpsc::Receiver<TokenChunk> {
         let (tx, rx) = mpsc::channel(TOKEN_CHANNEL_CAPACITY);
         let model = Arc::clone(&self.model);
         let tokenizer = Arc::clone(&self.tokenizer);
         let device = self.device.clone();
         let eos = self.eos_token;
         let system_prompt = Arc::clone(&self.system_prompt);
-        let user_prompt: Arc<str> = Arc::from(user_prompt);
+        let history = history.to_vec();
         let generation = self.generation;
 
         tokio::task::spawn_blocking(move || {
@@ -177,7 +225,7 @@ impl LlmEngine {
                 &device,
                 eos,
                 &system_prompt,
-                &user_prompt,
+                &history,
                 generation,
                 &tx,
             );
@@ -246,15 +294,19 @@ fn run_completion(
     device: &Device,
     eos_token: u32,
     system_prompt: &str,
-    user_prompt: &str,
+    history: &[Message],
     params: GenerationConfig,
     tx: &mpsc::Sender<TokenChunk>,
 ) {
-    let prompt = format!(
-        "<|im_start|>system\n{system_prompt}<|im_end|>\n\
-         <|im_start|>user\n{user_prompt}<|im_end|>\n\
-         <|im_start|>assistant\n",
-    );
+    let mut prompt = format!("<|im_start|>system\n{system_prompt}<|im_end|>\n");
+    for msg in history {
+        prompt.push_str("<|im_start|>");
+        prompt.push_str(msg.role.tag());
+        prompt.push('\n');
+        prompt.push_str(&msg.content);
+        prompt.push_str("<|im_end|>\n");
+    }
+    prompt.push_str("<|im_start|>assistant\n");
 
     let encoded = match tokenizer.encode(prompt, true) {
         Ok(e) => e,

@@ -10,5 +10,5 @@ mod error;
 mod think_filter;
 mod token_stream;
 
-pub use engine::{EngineConfig, GenerationConfig, LlmEngine, TokenChunk};
+pub use engine::{EngineConfig, GenerationConfig, LlmEngine, Message, Role, TokenChunk};
 pub use error::LlmError;
