@@ -22,6 +22,8 @@ pub(crate) struct VrmVisemeMap {
     pub(crate) i: Option<usize>,
     pub(crate) o: Option<usize>,
     pub(crate) u: Option<usize>,
+    /// `blink` preset (both eyes), for the idle blink — not a viseme.
+    pub(crate) blink: Option<usize>,
 }
 
 impl VrmVisemeMap {
@@ -47,7 +49,7 @@ impl VrmVisemeMap {
     /// Highest slot index referenced (so the caller can sanity-check it
     /// against the actual `MorphWeights` length).
     pub(crate) fn max_slot(&self) -> usize {
-        [self.a, self.e, self.i, self.o, self.u]
+        [self.a, self.e, self.i, self.o, self.u, self.blink]
             .into_iter()
             .flatten()
             .max()
@@ -99,6 +101,7 @@ pub(crate) fn parse_vrm_visemes(path: &Path) -> Option<VrmVisemeMap> {
             (Some("i"), Some(n)) => map.i = Some(n),
             (Some("o"), Some(n)) => map.o = Some(n),
             (Some("u"), Some(n)) => map.u = Some(n),
+            (Some("blink"), Some(n)) => map.blink = Some(n),
             _ => {}
         }
     }

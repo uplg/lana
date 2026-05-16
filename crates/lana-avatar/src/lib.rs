@@ -31,6 +31,7 @@ use std::path::PathBuf;
 use bevy::gltf::GltfAssetLabel;
 use bevy::prelude::*;
 use bevy::scene::SceneInstanceReady;
+use bevy_vrm::BoneName;
 use bevy_vrm::VrmInstance;
 use bevy_vrm::VrmPlugins;
 use bevy_vrm::mtoon::MtoonSun;
@@ -90,6 +91,13 @@ struct AvatarAsset {
     /// their back to a +Z camera unless rotated 180°; glTF exports vary.
     /// Tunable via `LANA_AVATAR_ROT_Y` (degrees).
     yaw: f32,
+    /// VRM only: camera distance (metres) in front of the head bone for the
+    /// portrait/bust framing. Tunable via `LANA_AVATAR_CAM_DIST`.
+    cam_dist: f32,
+    /// VRM only: vertical aim offset (metres) above the head *bone* — the
+    /// bone sits ≈ear level, so a positive offset frames the whole skull
+    /// with headroom. Tunable via `LANA_AVATAR_CAM_HEIGHT`.
+    cam_height: f32,
 }
 
 /// Marker for the avatar root entity (so the idle system can find it).
@@ -162,6 +170,21 @@ pub fn run(avatar_path: PathBuf, updates: Receiver<AvatarUpdate>) -> Result<(), 
         .and_then(|v| v.parse::<f32>().ok())
         .unwrap_or(180.0)
         .to_radians();
+    // Portrait/bust framing distance in front of the head bone. VRM 0.0
+    // ships no idle, so rather than hand-pose the skeleton (rig-dependent,
+    // proven unreliable) we frame head+shoulders so the bind-pose arms fall
+    // out of frame — the standard talking-avatar shot.
+    let cam_dist = std::env::var("LANA_AVATAR_CAM_DIST")
+        .ok()
+        .and_then(|v| v.parse::<f32>().ok())
+        .filter(|d| *d > 0.05)
+        .unwrap_or(1.15);
+    // Vertical aim above the head bone (≈ear level) so the whole skull has
+    // headroom; level (untilted) shot avoids cropping the crown.
+    let cam_height = std::env::var("LANA_AVATAR_CAM_HEIGHT")
+        .ok()
+        .and_then(|v| v.parse::<f32>().ok())
+        .unwrap_or(0.08);
 
     let mut app = App::new();
     app.add_plugins(DefaultPlugins.set(AssetPlugin {
@@ -187,13 +210,24 @@ pub fn run(avatar_path: PathBuf, updates: Receiver<AvatarUpdate>) -> Result<(), 
     }
     app.add_plugins(overlay::OverlayPlugin)
         .insert_resource(Updates(updates))
-        .insert_resource(AvatarAsset { file, kind, yaw })
+        .insert_resource(AvatarAsset {
+            file,
+            kind,
+            yaw,
+            cam_dist,
+            cam_height,
+        })
         .insert_resource(ClearColor(Color::srgb(0.10, 0.11, 0.13)))
         .init_resource::<mouth::VisemeSchedule>()
         .add_systems(Startup, setup)
         .add_systems(
             Update,
-            (idle_motion, mouth::resolve_mouth, mouth::drive_mouth),
+            (
+                idle_motion,
+                frame_camera_vrm,
+                mouth::resolve_mouth,
+                mouth::drive_mouth,
+            ),
         )
         .run();
 
@@ -273,6 +307,55 @@ fn idle_motion(time: Res<Time>, mut avatars: Query<(&mut Transform, &Base), With
         tf.translation = base.0.translation;
         tf.scale = Vec3::splat(breathe);
     }
+}
+
+/// VRM path: frame the camera on the head bone (portrait/bust shot) so the
+/// unsolved bind-pose arms fall out of frame — the standard talking-avatar
+/// shot, and a deterministic alternative to hand-posing the skeleton.
+/// One-shot once the skeleton's world transforms exist; glTF keeps the
+/// default camera (no `BoneName`). Uses the head's *world position* only
+/// (translation is robust even on the mirror-scaled rigs that broke the
+/// earlier rotation-based pose attempts).
+fn frame_camera_vrm(
+    mut done: Local<bool>,
+    avatar: Res<AvatarAsset>,
+    bones: Query<(&BoneName, &GlobalTransform)>,
+    mut cam: Query<&mut Transform, With<Camera3d>>,
+) {
+    if *done || avatar.kind != AvatarKind::Vrm {
+        return;
+    }
+    let mut head = None;
+    for (name, gt) in &bones {
+        if matches!(name, BoneName::Head) {
+            head = Some(gt.translation());
+            break;
+        }
+    }
+    let Some(h) = head else {
+        return;
+    };
+    if h.length_squared() < 1e-4 {
+        return; // global transforms not propagated yet — retry.
+    }
+    let Ok(mut tf) = cam.single_mut() else {
+        return;
+    };
+    // Level (untilted) shot: eye and aim share the same height, `cam_dist`
+    // in front (+Z, the side the corrective yaw makes the avatar face).
+    // Aim a touch above the head bone so the whole skull has headroom and
+    // the crown is not clipped; shoulders sit near the bottom edge so the
+    // T-pose arms stay out of frame.
+    let aim_y = h.y + avatar.cam_height;
+    let eye = Vec3::new(h.x, aim_y, h.z + avatar.cam_dist);
+    let target = Vec3::new(h.x, aim_y, h.z);
+    *tf = Transform::from_translation(eye).looking_at(target, Vec3::Y);
+    *done = true;
+    info!(
+        dist = avatar.cam_dist,
+        height = avatar.cam_height,
+        "camera: framed portrait on VRM head"
+    );
 }
 
 /// glTF path: once the scene is spawned, start its first embedded clip

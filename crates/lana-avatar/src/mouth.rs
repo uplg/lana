@@ -99,6 +99,8 @@ pub(crate) struct Mouth {
     /// Aperture morph (`jawOpen`/`mouthOpen`), driven by openness — also
     /// the sole driver on rigs that expose no vowel shapes.
     jaw: Option<usize>,
+    /// Both-eyes blink morph, driven by the idle blink timer.
+    blink: Option<usize>,
 }
 
 /// How responsive the mouth is (seconds to ~63 % of a step). Small enough
@@ -173,6 +175,7 @@ fn bind_vrm_mouth(
                 node: entity,
                 vowels,
                 jaw: None,
+                blink: vrm.blink,
             });
             scan.done = true;
             return;
@@ -222,6 +225,7 @@ fn scan_named_mouth(
             (Vowel::U, name_index(names, &["Fcl_MTH_U", "viseme_U", "U"])),
         ];
         let jaw = name_index(names, &["jawOpen", "mouthOpen", "Fcl_MTH_Open"]);
+        let blink = name_index(names, &["Fcl_EYE_Close", "eyeBlink", "blink"]);
 
         if vowels.iter().any(|(_, i)| i.is_some()) || jaw.is_some() {
             info!(
@@ -234,6 +238,7 @@ fn scan_named_mouth(
                 node: entity,
                 vowels,
                 jaw,
+                blink,
             });
             scan.done = true;
             return;
@@ -275,10 +280,30 @@ fn scan_named_mouth(
     }
 }
 
-/// Drive the resolved mouth morphs from the schedule, smoothed per frame.
+/// Idle-blink bookkeeping (system-local), timed on `Time::elapsed_secs`.
+#[derive(Debug, Default)]
+pub(crate) struct BlinkState {
+    /// When the next blink should start (elapsed seconds; `0.0` = uninit).
+    next_at: f32,
+    /// When the current blink ends (elapsed seconds).
+    end_at: f32,
+}
+
+/// One eye-close duration (seconds).
+const BLINK_DUR: f32 = 0.12;
+
+/// Pseudo-random next-blink interval (≈2.5–5.5 s) without an RNG dep:
+/// an irregular sine so blinks don't look metronomic.
+fn blink_interval(t: f32) -> f32 {
+    1.5_f32.mul_add((t * 1.37).sin(), 4.0)
+}
+
+/// Drive the resolved mouth morphs from the schedule (smoothed per frame)
+/// and the periodic idle blink.
 pub(crate) fn drive_mouth(
     mouth: Option<Res<Mouth>>,
     mut schedule: ResMut<VisemeSchedule>,
+    mut blink: Local<BlinkState>,
     time: Res<Time>,
     mut weights: Query<&mut MorphWeights>,
 ) {
@@ -329,4 +354,25 @@ pub(crate) fn drive_mouth(
         0.0
     };
     set(mouth.jaw, jaw_target);
+
+    // Idle blink: a quick sine close/open at irregular intervals. Set
+    // directly (not smoothed) so the ~120 ms blink stays crisp. The `set`
+    // closure is no longer used, so `slots` can be reborrowed here.
+    let now = time.elapsed_secs();
+    if blink.next_at <= 0.0 {
+        blink.next_at = now + blink_interval(now);
+    }
+    if now >= blink.next_at && now >= blink.end_at {
+        blink.end_at = now + BLINK_DUR;
+        blink.next_at = now + BLINK_DUR + blink_interval(now);
+    }
+    let blink_w = if now < blink.end_at {
+        let progress = 1.0 - ((blink.end_at - now) / BLINK_DUR).clamp(0.0, 1.0);
+        (progress * core::f32::consts::PI).sin()
+    } else {
+        0.0
+    };
+    if let Some(w) = mouth.blink.and_then(|i| slots.get_mut(i)) {
+        *w = blink_w;
+    }
 }

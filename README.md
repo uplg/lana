@@ -2,10 +2,10 @@
 
 Local-only conversational voice agent. You speak, Lana answers out loud, in
 French (primary) or English, as a 3D avatar in a native window with
-audio-driven lip-sync. Planned next: a proper resting pose / idle
-animation (Phase 7), local tool-calling (Phase 8 — e.g. driving your own
-home API to switch the lights, still 100 % local: just an HTTP call on
-your network) and cross-session memory (Phase 9). See
+audio-driven lip-sync, idle blink and a portrait framing. Planned next:
+local tool-calling (Phase 8 — e.g. driving your own home API to switch the
+lights, still 100 % local: just an HTTP call on your network) and
+cross-session memory (Phase 9). See
 [PLAN.md](./PLAN.md). Nothing leaves the machine — no cloud, no telemetry,
 no Python.
 
@@ -85,10 +85,18 @@ cargo run --release --bin lana -- synth "Bonjour" out.wav    # TTS
 `LANA_AVATAR_PATH` (required for `converse`): a `.glb`/`.gltf` realistic
 avatar or a `.vrm`. `LANA_AVATAR_ROT_Y` (degrees, default `180`): corrective
 yaw — VRM 0.x faces away from the camera; set `0` (or another value) if your
-model then faces backwards. A glTF avatar auto-plays its first embedded
-animation clip if it has one; a `.vrm` has none, so it renders in its bind
-pose (T-pose) unless it is itself already posed/animated — a proper VRM idle
-is Phase 7 (hand-computing arm rotations is not reliable across rigs).
+model then faces backwards. For a `.vrm`, the camera auto-frames a level
+head-and-shoulders portrait on the head bone (the standard talking-avatar
+shot) so the bind-pose arms fall out of frame — VRM 0.0 ships no idle
+animation and hand-posing the skeleton is not reliable across rigs, so this
+is the deterministic choice. Two knobs (the head-bone-to-crown distance
+varies per model, so tune to taste): `LANA_AVATAR_CAM_DIST` (metres,
+default `1.15`) — raise to pull back / shrink her, lower to come closer;
+`LANA_AVATAR_CAM_HEIGHT` (metres, default `0.08`) — vertical aim above the
+head bone, raise it if the crown is clipped / to drop her down in frame.
+A glTF avatar auto-plays its
+first embedded animation clip if it has one and keeps the default camera.
+The avatar also blinks on an irregular idle timer.
 Lip-sync is automatic from the spoken audio. A `.vrm` is resolved from its
 own `blendShapeMaster` (the VRM spec's a/i/u/e/o presets — deterministic,
 no per-rig guessing); a glTF avatar is resolved by ARKit/VRoid morph-target

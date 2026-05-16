@@ -10,9 +10,10 @@ must stay fully usable for other work while Lana runs.
 > voice loop works (`lana converse`), real **Estelle** voice, native
 > streaming TTS, conversation memory (in-RAM), LLM = Luth-LFM2-1.2B.
 > LLM/STT/TTS all auto-download from Hugging Face (zero manual setup).
-> Avatar window done (Phase 5: Bevy + bevy_vrm + egui overlay); lip-sync
-> landed + instrumented (Phase 6, pending on-device morph ID); posture
-> deferred to Phase 7. 100 % Rust stack: no Swift, no Python, no cloud.
+> Avatar done: Phase 5 window, Phase 6 lip-sync (VRM via its own
+> blendShapeMaster), Phase 7 portrait framing + idle blink (full-body
+> VRM 0.0 posing intentionally not attempted — framing instead).
+> 100 % Rust stack: no Swift, no Python, no cloud.
 
 ---
 
@@ -200,9 +201,20 @@ not deterministic — the clean fix is a real idle/retargeted animation, not
 bone math. Reverted to the visible bind pose; `LANA_AVATAR_ARM_DOWN`
 removed (no silent knob). *Not GUI-tested in CI — verified on-device.*
 
-### ⬜ Phase 7 — Polish
-FR/EN voice picker in the UI, VRM hot-reload, idle mode (breathing,
-blinking, gaze at camera).
+### 🚧 Phase 7 — Presentation polish
+Done: **portrait/bust camera framing** — for a `.vrm`, a one-shot system
+aims the camera at the `Head` bone's *world position* (translation only —
+robust on the mirror-scaled rigs that broke the earlier rotation-based
+pose attempts) for a head-and-shoulders shot, so the unsolved bind-pose
+arms fall out of frame. This is the deliberate, deterministic choice over
+hand-posing an arbitrary VRM 0.0 skeleton (no VRMA in `bevy_vrm` 0.3, no
+humanoid normalization; bone math failed twice for real reasons). Tunable
+via `LANA_AVATAR_CAM_DIST` (default 0.55 m); glTF keeps the default camera
+and its embedded idle clip. Done: **idle blink** reusing the proven
+`blendShapeMaster` path (parse the `blink` preset; an irregular sine timer
+drives it crisply, un-smoothed). Idle sway/breathing retained.
+Still open: FR/EN voice picker, VRM hot-reload, gaze-at-camera. *Not
+GUI-tested in CI — verified on-device.*
 
 ### ⬜ Phase 8 — Tools (function-calling)
 
@@ -328,10 +340,12 @@ For when the avatar work progresses; none blocks the voice loop.
 
 ## 10. Immediate next steps
 
-Recently delivered: **Phase 6 lip-sync landed** (pure-DSP `lana-viseme`,
-wall-clock viseme schedule; VRM resolved from its own `blendShapeMaster`,
-glTF by morph name) — pending on-device confirmation the mouth visibly
-moves; posture bone-math reverted (Phase 7 idle animation instead),
+Recently delivered: **Phase 7 presentation polish** (portrait camera
+framing on the VRM head bone so the bind-pose arms leave frame — the
+deliberate choice over hand-posing; idle blink via `blendShapeMaster`),
+**Phase 6 lip-sync** (pure-DSP `lana-viseme`, wall-clock viseme schedule;
+VRM via its own `blendShapeMaster`, glTF by morph name) — pending
+on-device confirmation the mouth visibly moves,
 **Phase 5 avatar window** (Bevy + glTF/VRM + egui overlay, Bevy on main
 thread; corrective base yaw via `LANA_AVATAR_ROT_Y`, default 180°),
 conversation memory (in-RAM), Estelle voice, default `tu` form,
@@ -349,11 +363,14 @@ Photoreal path researched and specified as **Phase 10** (FLAME-rigged
    moves wrong/weak, tune `lana-viseme` thresholds; if not at all, the
    loader's morph slot order differs from the glTF order (next: parse
    `targetNames` and match by name instead of trusting slot order).
-2. **Phase 7** (posture + polish): a real VRM idle — load a VRMA/retargeted
-   humanoid clip through the animation system (the deterministic route),
-   not hand-computed bone rotations. Plus FR/EN voice picker, blink/gaze.
+2. STT robustness: parakeet-rs (v3 multilingual) has no language lock, so
+   heavily FR-accented English can decode as Cyrillic. Consider a
+   script-sanity guard (drop/re-listen on a predominantly non-Latin
+   transcript while the agent is FR/EN) rather than feeding garbage to the
+   LLM. Decide with the user before implementing.
 3. **Phase 8** (tools): MVP function-calling via the native Luth-LFM2 tools
    format (`<|tool_list_start|>`/`<|tool_response_start|>`) on a single
    tool (light on/off via a local API).
 4. **Phase 9**: cross-session memory — persist conversation + user profile
    to disk so nothing is lost on restart.
+5. Phase 7 leftovers: FR/EN voice picker, VRM hot-reload, gaze-at-camera.
