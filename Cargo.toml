@@ -149,3 +149,16 @@ opt-level = 3
 
 [profile.test]
 opt-level = 1
+
+# Fast-iteration profile: same optimised codegen as `release` (so the
+# avatar/audio stay realtime) but WITHOUT fat-LTO and with parallel,
+# incremental codegen — the multi-minute whole-program LTO + single
+# codegen-unit relink is what makes `--release` painful to iterate on a
+# Bevy+wgpu+candle graph. Use `cargo run --profile release-fast`. Ship
+# real builds with plain `--release` (keeps fat-LTO for max runtime perf).
+[profile.release-fast]
+inherits = "release"
+lto = false
+codegen-units = 16
+incremental = true
+strip = false

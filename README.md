@@ -25,7 +25,7 @@ for other work while Lana runs (runtime footprint ≈ 2 GB).
 | LLM | Luth-LFM2-1.2B (French-specialised Liquid LFM2) Q8_0 GGUF via `candle` (Metal) |
 | TTS | Kyutai Pocket TTS, native Rust port (vendored `babybirdprd/pocket-tts` on `candle`/Metal), French `french_24l` + real **Estelle** voice |
 | Lip-sync | `lana-viseme`: short-time FFT energy + F1/F2 formants → vowel/openness; the mouth-region points spread open with the spoken audio |
-| Avatar | Bevy 0.18 — **braindance point-cloud**: a model's vertices (`.glb`/`.vrm`/`.pcd`, sampled — no skeleton/morphs) as auto-instanced emissive points, HDR+bloom, scan sweep + flicker over a near-black scene. Procedural fallback if no model. `LANA_AVATAR_MODEL` / `LANA_AVATAR_CAM_DIST` |
+| Avatar | Bevy 0.18 — **braindance point-cloud**: a model's vertices+normals (`.glb`/`.vrm`/`.pcd`, no skeleton/morphs) as one `PointList` mesh + a custom embedded-WGSL material: colour = the exact vertex normal, HDR→bloom, back-cull, per-point jitter, GPU scan/flicker + glowing mouth-band lip-sync. Orbit camera. Procedural fallback if no model |
 | UI | `bevy_egui` 0.39 overlay — phase, rolling transcript, mic-mute toggle |
 | Orchestrator | Tokio state machine: streaming TTS, conversation memory, barge-in |
 
@@ -76,7 +76,11 @@ or materials. If no model is found it falls back to a procedural cloud.
 
 ```sh
 # Full voice loop + avatar window (mic → STT → LLM → TTS → speaker + 3D
-# point-cloud avatar with a live transcript overlay). Release for realtime:
+# point-cloud avatar with a live transcript overlay). Realtime needs an
+# optimised build; for fast iteration use `release-fast` (optimised but
+# no fat-LTO — links in seconds instead of minutes):
+cargo run --profile release-fast --bin lana -- converse
+# Ship/benchmark with full optimisation (slow fat-LTO link):
 cargo run --release --bin lana -- converse
 
 # One-shots (no window):
@@ -90,12 +94,13 @@ cargo run --release --bin lana -- synth "Bonjour" out.wav    # TTS
 **the camera is an interactive orbit**: left-drag to orbit, mouse wheel to
 zoom, ↑/↓ to pan the look-at height, and **press `L` to log the current
 camera pose** (so you can pin it via `LANA_AVATAR_CAM_DIST` /
-`LANA_AVATAR_CAM_Y`). Points are emissive and **glow via HDR bloom** over a
-near-black scene; the surface facing the camera is scaled up so the form
-reads (depth reveal). The model is normalised to a fixed height; the
-lower-head band opens with the spoken audio, a scan plane sweeps it and
-points flicker (braindance look). Point size / colours / scan-flicker
-intensity are constants in `cloud.rs`. Optional local overrides (power users):
+`LANA_AVATAR_CAM_Y`). The colour is the exact vertex normal, **glowing
+via HDR bloom** over a near-black scene; back-facing points are culled and
+a per-point jitter keeps it a living (not uncanny-rigid) cloud. The
+lower-face band opens *and* glows with the spoken audio (lip-sync), tunable
+on-device: `LANA_MOUTH_Y` / `LANA_MOUTH_H` / `LANA_MOUTH_AMP` and
+`LANA_PT_JITTER`. The shader is embedded in the binary (no `assets/` dir).
+Optional local overrides (power users):
 `LANA_MODEL_PATH` /
 `LANA_TOKENIZER_PATH` (LLM GGUF + tokenizer.json), `LANA_STT_MODEL_DIR`
 (directory of Parakeet ONNX files). Voice override: `LANA_TTS_VOICE_EMBEDDING`

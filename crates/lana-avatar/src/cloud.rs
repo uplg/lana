@@ -1,36 +1,41 @@
-//! Procedural point-cloud avatar — a dark, glowing "hologram bust".
+//! Point-cloud avatar — a Cyberpunk-braindance "scan hologram".
 //!
-//! No mesh, no skeleton, no morph targets (the three VRM headaches): the
-//! avatar is a few thousand emissive points generated procedurally (a
-//! fibonacci-sampled head ellipsoid + a bust shell + eye/mouth clusters),
-//! drawn as one shared tiny emissive sphere auto-instanced by Bevy, glowing
-//! via an HDR camera + bloom over a near-black scene. Lip-sync reuses the
-//! Phase-6 [`VisemeSchedule`]: the mouth-region points spread open with the
-//! spoken `openness`. Idle = a slow turn/breathe + per-point shimmer; the
-//! eye points blink on an irregular timer.
+//! A model's vertices (positions + normals, sampled by [`crate::glb`]) are
+//! one `PointList` mesh drawn by a custom WGSL [`PointMaterial`] embedded
+//! in the binary (`point.wgsl`): the colour IS the vertex normal
+//! (`n*0.5+0.5`, exact/unquantised), HDR-scaled so the camera bloom makes
+//! it glow; back-facing points are discarded for a clean shell; the mouth
+//! cluster drops with the spoken `openness` (lip-sync); the eyes get an
+//! auto-centred iris; a scan/flicker + per-point jitter play — all on the
+//! GPU. No model file ⇒ a procedural fallback cloud.
 
-// Bounded procedural geometry: point counts, ring indices and trig phases
-// are all small and range-safe, so the `usize`/`u32`→`f32` casts are exact
-// for the magnitudes involved, and explicit-FMA lints only obscure the
-// position formulas. Same precedent as the capture-path DSP decimator.
+// Bounded procedural geometry (fallback only): small counts, range-safe
+// casts; FMA rewrites only obscure the position formulas. resample.rs
+// precedent.
 #![expect(
     clippy::cast_precision_loss,
-    clippy::cast_possible_truncation,
-    clippy::cast_sign_loss,
     clippy::suboptimal_flops,
-    reason = "bounded geometry + normal→colour buckets clamped to 0..LEVELS; \
-              FMA rewrites obscure the position formulas, counts are small"
+    reason = "bounded procedural/anim geometry; small counts, FMA rewrites \
+              only obscure the position/idle formulas (resample.rs precedent)"
 )]
 
-use std::collections::{HashMap, VecDeque};
+use std::collections::VecDeque;
 use std::path::PathBuf;
 use std::time::{Duration, Instant};
 
+use bevy::asset::{RenderAssetUsages, embedded_asset};
 use bevy::core_pipeline::tonemapping::Tonemapping;
 use bevy::input::mouse::{MouseMotion, MouseWheel};
+use bevy::mesh::{MeshVertexBufferLayoutRef, PrimitiveTopology};
+use bevy::pbr::{MaterialPipeline, MaterialPipelineKey};
 use bevy::post_process::bloom::Bloom;
 use bevy::prelude::*;
-use lana_viseme::{VisemeFrame, Vowel};
+use bevy::reflect::TypePath;
+use bevy::render::render_resource::{
+    AsBindGroup, RenderPipelineDescriptor, SpecializedMeshPipelineError,
+};
+use bevy::shader::ShaderRef;
+use lana_viseme::VisemeFrame;
 
 /// One scheduled mouth pose, timed on the wall clock so it lines up with
 /// the speaker output the orchestrator enqueued at the same instant.
@@ -38,7 +43,6 @@ use lana_viseme::{VisemeFrame, Vowel};
 struct Scheduled {
     at: Instant,
     openness: f32,
-    vowel: Vowel,
 }
 
 /// Pending lip-sync poses. Successive per-sentence timelines are appended
@@ -66,7 +70,6 @@ impl VisemeSchedule {
             self.queue.push_back(Scheduled {
                 at,
                 openness: f.openness,
-                vowel: f.vowel,
             });
         }
         if let Some(last) = frames.last() {
@@ -82,9 +85,9 @@ impl VisemeSchedule {
         self.tail = None;
     }
 
-    /// Pose due at `now`, advancing past stale frames. `None` once the
-    /// schedule is exhausted (mouth returns to rest).
-    fn current(&mut self, now: Instant) -> Option<(f32, Vowel)> {
+    /// Openness due at `now`, advancing past stale frames. `0.0` once the
+    /// schedule is exhausted (mouth closes).
+    fn openness(&mut self, now: Instant) -> f32 {
         while self.queue.len() > 1 {
             if self.queue.get(1).is_some_and(|s| s.at <= now) {
                 self.queue.pop_front();
@@ -92,45 +95,21 @@ impl VisemeSchedule {
                 break;
             }
         }
-        match self.queue.front() {
-            Some(s) if s.at <= now => Some((s.openness, s.vowel)),
-            Some(_) => Some((0.0, Vowel::Sil)),
-            None => {
-                self.tail = None;
-                None
-            }
-        }
+        let Some(s) = self.queue.front() else {
+            self.tail = None;
+            return 0.0;
+        };
+        if s.at <= now { s.openness } else { 0.0 }
     }
 }
 
-/// Which part of the avatar a point belongs to (drives its animation).
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum Role {
-    Skull,
-    Bust,
-    Eye,
-    Mouth,
-}
-
-/// A single point: rest position, surface normal (for back-cull + facing
-/// shade so the form reads), role, and a per-point phase seed for shimmer.
-#[derive(Component)]
-struct Pt {
-    home: Vec3,
-    normal: Vec3,
-    role: Role,
-    seed: f32,
-}
-
-/// The cloud's parent entity; rotated/scaled for the idle turn + breathing.
+/// The cloud's root entity; a slow idle drift composes with the orbit cam.
 #[derive(Component)]
 struct CloudRoot;
 
-/// Normalised vertical extent (feet `0` → head `max_y`), for the scan sweep.
-#[derive(Resource, Clone, Copy)]
-struct Bounds {
-    max_y: f32,
-}
+/// Handle to the live point material (its uniform is updated each frame).
+#[derive(Resource)]
+struct PointMat(Handle<PointMaterial>);
 
 /// Interactive orbit camera. Left-drag orbits, wheel zooms, ↑/↓ pans the
 /// look-at height, `L` logs the current values so they can be pinned.
@@ -154,71 +133,87 @@ impl OrbitCam {
     }
 }
 
-/// Idle-blink bookkeeping (system-local), timed on `Time::elapsed_secs`.
-#[derive(Debug, Default)]
-pub(crate) struct BlinkClock {
-    next_at: f32,
-    end_at: f32,
+/// Custom point material — three `Vec4` uniforms mirroring the WGSL
+/// `b0`/`b1`/`b2` (mouth / jitter / iris params; see fields).
+#[derive(Asset, TypePath, AsBindGroup, Debug, Clone)]
+struct PointMaterial {
+    /// x openness · y emissive K · z back-cull · w mouth-band centre.
+    #[uniform(0)]
+    p: Vec4,
+    /// x mouth-band half-height · y open amplitude · z jitter · w mouth
+    /// X half-width (isolates the mouth cluster).
+    #[uniform(1)]
+    q: Vec4,
+    /// x eye-centre Y · y eye-centre |X| · z eye radius · w pupil radius
+    /// (the iris that de-uncannies the eyes).
+    #[uniform(2)]
+    r: Vec4,
+    /// x eye-centre Z (front of the eyeball) · yzw spare — gives the iris
+    /// a 3D mask so it's a clean round patch, not a smeared XY disc.
+    #[uniform(3)]
+    s: Vec4,
 }
 
-// Procedural-fallback layout (only used if no model file is found).
-const HEAD_C: Vec3 = Vec3::new(0.0, 0.60, 0.0);
-const HEAD_R: Vec3 = Vec3::new(0.46, 0.55, 0.46);
-const EYE_Y: f32 = 0.68;
-const MOUTH_Y: f32 = 0.42;
-const FACE_Z: f32 = 0.40;
-const BLINK_DUR: f32 = 0.12;
+/// Embedded shader path (see `embedded_asset!` in [`CloudPlugin::build`]).
+const POINT_SHADER: &str = "embedded://lana_avatar/point.wgsl";
 
-/// Golden-angle in radians, for fibonacci-sphere / disc sampling.
+impl Material for PointMaterial {
+    fn vertex_shader() -> ShaderRef {
+        POINT_SHADER.into()
+    }
+    fn fragment_shader() -> ShaderRef {
+        POINT_SHADER.into()
+    }
+    fn specialize(
+        _pipeline: &MaterialPipeline,
+        descriptor: &mut RenderPipelineDescriptor,
+        layout: &MeshVertexBufferLayoutRef,
+        _key: MaterialPipelineKey<Self>,
+    ) -> Result<(), SpecializedMeshPipelineError> {
+        descriptor.primitive.topology = PrimitiveTopology::PointList;
+        let vbl = layout.0.get_layout(&[
+            Mesh::ATTRIBUTE_POSITION.at_shader_location(0),
+            Mesh::ATTRIBUTE_NORMAL.at_shader_location(1),
+        ])?;
+        descriptor.vertex.buffers = vec![vbl];
+        Ok(())
+    }
+}
+
+/// Golden-angle in radians, for fibonacci-sphere sampling (fallback only).
 const GOLDEN_ANGLE: f32 = 2.399_963_2;
-
-/// All clouds are normalised to this height (feet at y=0), so the camera
-/// and the animation bands are model-independent.
+/// All clouds are normalised to this height (feet at y=0).
 const TARGET_H: f32 = 1.7;
-/// Max points kept (auto-instanced; subsampled from the model).
-const TARGET_PTS: usize = 16_000;
-/// Normalised-space role bands: the head's lower ring drives lip-sync; the
-/// top cap is treated as skull/hair. Tuned for a full-body humanoid.
-const MOUTH_CY: f32 = TARGET_H * 0.895;
-const EYE_CY: f32 = TARGET_H * 0.945;
-const HEAD_LO: f32 = TARGET_H * 0.86;
-const HEAD_HI: f32 = TARGET_H * 0.93;
+/// Max points kept (one draw call — keep it fine).
+const TARGET_PTS: usize = 120_000;
+/// Mouth-band centre in normalised Y (≈ lower face of a full-body model).
+const MOUTH_CY: f32 = TARGET_H * 0.89;
+/// HDR scale of the normal colour (bloom glow without washing to white).
+const EMISSIVE_K: f32 = 2.6;
+/// Back-cull threshold: keep points whose normal faces the camera.
+const CULL: f32 = 0.05;
+/// Procedural-fallback head ellipsoid (only if no model file is found).
+const HEAD_C: Vec3 = Vec3::new(0.0, 0.60, 0.0);
+const HEAD_R: Vec3 = Vec3::new(0.46, 0.62, 0.46);
 
-/// Per-channel quantisation of the normal→colour map (`LEVELS³` distinct
-/// emissive materials max → still auto-instanced). Higher = smoother.
-const NORMAL_LEVELS: u8 = 6;
-/// HDR scale of the normal colour so bloom glows without washing to white.
-const EMISSIVE_K: f32 = 3.0;
-
-/// Quantise a unit normal to a small RGB bucket via `n*0.5 + 0.5`
-/// (the classic "vertex-normals" visualisation), so close orientations
-/// share one material.
-fn normal_key(n: Vec3) -> [u8; 3] {
-    let lf = f32::from(NORMAL_LEVELS - 1);
-    let q = |c: f32| (((c * 0.5) + 0.5).clamp(0.0, 1.0) * lf).round() as u8;
-    [q(n.x), q(n.y), q(n.z)]
-}
-
-/// The HDR emissive colour for a normal bucket.
-fn key_color(k: [u8; 3]) -> LinearRgba {
-    let lf = f32::from(NORMAL_LEVELS - 1);
-    let f = |b: u8| f32::from(b) / lf * EMISSIVE_K;
-    LinearRgba::rgb(f(k[0]), f(k[1]), f(k[2]))
-}
-
-/// Plugin: resources + the spawn and animation systems.
+/// Plugin: the material, resources and systems.
 pub(crate) struct CloudPlugin;
 
 impl Plugin for CloudPlugin {
     fn build(&self, app: &mut App) {
+        // Ship the shader inside the binary (resolves to
+        // `embedded://lana_avatar/point.wgsl`) — no `assets/` dir, immune
+        // to the cwd/crate-manifest path resolution that broke before.
+        embedded_asset!(app, "point.wgsl");
         app.init_resource::<VisemeSchedule>()
             .insert_resource(ClearColor(Color::srgb(0.010, 0.012, 0.020)))
+            .add_plugins(MaterialPlugin::<PointMaterial>::default())
             .add_systems(Startup, setup)
-            .add_systems(Update, (orbit_camera, animate_cloud));
+            .add_systems(Update, (orbit_camera, animate));
     }
 }
 
-/// Fibonacci point `i` of `n` on the unit sphere.
+/// Fibonacci point `i` of `n` on the unit sphere (fallback geometry).
 fn fib_sphere(i: usize, n: usize) -> Vec3 {
     let y = 1.0 - (i as f32 + 0.5) / n as f32 * 2.0;
     let r = (1.0 - y * y).max(0.0).sqrt();
@@ -226,60 +221,33 @@ fn fib_sphere(i: usize, n: usize) -> Vec3 {
     Vec3::new(theta.cos() * r, y, theta.sin() * r)
 }
 
-/// Build the full procedural cloud: `(position, role)` per point.
-fn build_points() -> Vec<(Vec3, Role)> {
-    let mut pts = Vec::with_capacity(2200);
-
-    // Skull: a fibonacci-sampled ellipsoid.
-    let skull_n = 1300;
+/// Procedural fallback: a head ellipsoid + a bust shell, with outward
+/// normals. Only used when no model file is present.
+fn build_points() -> Vec<(Vec3, Vec3)> {
+    let mut pts = Vec::with_capacity(4000);
+    let skull_n = 2600;
     for i in 0..skull_n {
         let u = fib_sphere(i, skull_n);
-        pts.push((
-            Vec3::new(
-                u.x.mul_add(HEAD_R.x, HEAD_C.x),
-                u.y.mul_add(HEAD_R.y, HEAD_C.y),
-                u.z.mul_add(HEAD_R.z, HEAD_C.z),
-            ),
-            Role::Skull,
-        ));
+        let p = Vec3::new(
+            u.x.mul_add(HEAD_R.x, HEAD_C.x),
+            u.y.mul_add(HEAD_R.y, HEAD_C.y),
+            u.z.mul_add(HEAD_R.z, HEAD_C.z),
+        );
+        pts.push((p, u));
     }
-
-    // Bust: stacked elliptical rings widening downward.
-    let rings = 22;
+    let rings = 26;
     for row in 0..rings {
         let f = row as f32 / (rings as f32 - 1.0);
-        let y = 0.10_f32.mul_add(1.0 - f, -0.55 * f) + 0.10; // 0.20 → -0.45
+        let y = 0.10_f32.mul_add(1.0 - f, -0.55 * f) + 0.10;
         let rx = 0.30_f32.mul_add(f, 0.20);
         let rz = 0.18_f32.mul_add(f, 0.12);
-        let per = 26_usize.saturating_add(row);
+        let per = 40_usize.saturating_add(row);
         for k in 0..per {
             let a = k as f32 / per as f32 * std::f32::consts::TAU;
-            pts.push((Vec3::new(a.cos() * rx, y, a.sin() * rz + 0.02), Role::Bust));
+            let p = Vec3::new(a.cos() * rx, y, a.sin() * rz + 0.02);
+            pts.push((p, Vec3::new(a.cos(), 0.2, a.sin()).normalize_or_zero()));
         }
     }
-
-    // Eyes: two small fibonacci discs on the face.
-    for &sx in &[-0.155_f32, 0.155] {
-        for i in 0..46 {
-            let r = ((i as f32 + 0.5) / 46.0).sqrt() * 0.058;
-            let a = i as f32 * GOLDEN_ANGLE;
-            pts.push((
-                Vec3::new(a.cos() * r + sx, a.sin() * r + EYE_Y, FACE_Z),
-                Role::Eye,
-            ));
-        }
-    }
-
-    // Mouth: a thin ellipse band (animated open by `openness`).
-    let mouth_n = 80;
-    for i in 0..mouth_n {
-        let a = i as f32 / mouth_n as f32 * std::f32::consts::TAU;
-        pts.push((
-            Vec3::new(a.cos() * 0.135, a.sin() * 0.028 + MOUTH_Y, FACE_Z + 0.01),
-            Role::Mouth,
-        ));
-    }
-
     pts
 }
 
@@ -327,68 +295,139 @@ fn normalize(p: Vec3, lo: Vec3, hi: Vec3) -> Vec3 {
     )
 }
 
-/// One ready-to-spawn point: normalised position, normal, role.
-type Spawn = (Vec3, Vec3, Role);
-
-/// Load the avatar cloud: a sampled model (positions + normals) if one is
-/// present, else the procedural fallback. Output is normalised + tagged.
-fn load_cloud() -> Vec<Spawn> {
-    if let Some(path) = model_path() {
-        if let Some(v) = crate::glb::sample_points(&path, TARGET_PTS) {
-            info!(model = %path.display(), points = v.len(), "avatar: model point cloud");
-            let verts: Vec<Vec3> = v.iter().map(|(p, _)| *p).collect();
-            let (lo, hi) = aabb(&verts);
-            return v
-                .into_iter()
-                .map(|(p, nrm)| {
-                    let n = normalize(p, lo, hi);
-                    let role = if n.y > HEAD_HI {
-                        Role::Skull
-                    } else if n.y > HEAD_LO {
-                        Role::Mouth
-                    } else {
-                        Role::Bust
-                    };
-                    // Uniform scale + translation preserves normal direction.
-                    (n, nrm.normalize_or_zero(), role)
-                })
-                .collect();
-        }
+/// Raw `(position, normal)` pairs: the sampled model, else the procedural
+/// fallback (logged either way).
+fn load_raw() -> Vec<(Vec3, Vec3)> {
+    let Some(path) = model_path() else {
+        return build_points();
+    };
+    let Some(v) = crate::glb::sample_points(&path, TARGET_PTS) else {
         warn!(model = %path.display(), "avatar: model sampling failed — procedural fallback");
-    }
-    let pts = build_points();
-    let verts: Vec<Vec3> = pts.iter().map(|(p, _)| *p).collect();
+        return build_points();
+    };
+    info!(model = %path.display(), points = v.len(), "avatar: model point cloud");
+    v
+}
+
+/// Load `(position, normal)` pairs, normalised to [`TARGET_H`].
+fn load_cloud() -> Vec<(Vec3, Vec3)> {
+    let raw = load_raw();
+    let verts: Vec<Vec3> = raw.iter().map(|(p, _)| *p).collect();
     let (lo, hi) = aabb(&verts);
-    let ctr = Vec3::new(
-        (lo.x + hi.x) * 0.5,
-        (lo.y + hi.y) * 0.5,
-        (lo.z + hi.z) * 0.5,
-    );
-    pts.into_iter()
-        .map(|(p, r)| {
-            // No mesh normals in the fallback: use the outward radial.
-            let nrm = Vec3::new(p.x - ctr.x, p.y - ctr.y, p.z - ctr.z).normalize_or_zero();
-            (normalize(p, lo, hi), nrm, r)
-        })
+    raw.into_iter()
+        .map(|(p, n)| (normalize(p, lo, hi), n.normalize_or_zero()))
         .collect()
 }
 
-/// HDR + bloom camera, near-black scene, and the spawned point cloud
-/// (one shared sphere mesh + one emissive material per role → auto-instanced).
+/// Auto-detect the eye centroids. Eyes are the forward-facing points (a
+/// convex cornea: `n.z > 0`, front half) in a Y band around eye level,
+/// split left/right in X. Returns the mean `(|x|, y, z)` of both eyes, or
+/// `None` if either side has no points (caller falls back to env coords).
+fn detect_eyes(cloud: &[(Vec3, Vec3)], y0: f32, band: f32) -> Option<(f32, f32, f32)> {
+    let (mut lx, mut ly, mut lz, mut ln) = (0.0_f32, 0.0_f32, 0.0_f32, 0.0_f32);
+    let (mut rx, mut ry, mut rz, mut rn) = (0.0_f32, 0.0_f32, 0.0_f32, 0.0_f32);
+    for (p, n) in cloud {
+        if (p.y - y0).abs() >= band || p.z <= 0.0 || n.z <= 0.2 {
+            continue;
+        }
+        if p.x < 0.0 {
+            lx += p.x;
+            ly += p.y;
+            lz += p.z;
+            ln += 1.0;
+        } else {
+            rx += p.x;
+            ry += p.y;
+            rz += p.z;
+            rn += 1.0;
+        }
+    }
+    if ln <= 0.0 || rn <= 0.0 {
+        return None;
+    }
+    Some((
+        ((lx / ln).abs() + rx / rn) * 0.5,
+        (ly / ln + ry / rn) * 0.5,
+        (lz / ln + rz / rn) * 0.5,
+    ))
+}
+
+/// Camera (orbit + bloom), the point-cloud mesh and its material.
 fn setup(
     mut commands: Commands,
     mut meshes: ResMut<Assets<Mesh>>,
-    mut materials: ResMut<Assets<StandardMaterial>>,
+    mut materials: ResMut<Assets<PointMaterial>>,
 ) {
     let cloud = load_cloud();
-    let max_y = cloud.iter().map(|(p, _, _)| p.y).fold(0.0_f32, f32::max);
-    // Face-focused start; the user then orbits/zooms live (left-drag,
-    // wheel, ↑/↓ pan) and presses `L` to log values to pin as defaults.
+    let max_y = cloud.iter().map(|(p, _)| p.y).fold(0.0_f32, f32::max);
+
+    let mut positions: Vec<[f32; 3]> = Vec::with_capacity(cloud.len());
+    let mut normals: Vec<[f32; 3]> = Vec::with_capacity(cloud.len());
+    for (p, n) in &cloud {
+        positions.push([p.x, p.y, p.z]);
+        normals.push([n.x, n.y, n.z]);
+    }
+    let mesh = Mesh::new(PrimitiveTopology::PointList, RenderAssetUsages::default())
+        .with_inserted_attribute(Mesh::ATTRIBUTE_POSITION, positions)
+        .with_inserted_attribute(Mesh::ATTRIBUTE_NORMAL, normals);
+    let mesh = meshes.add(mesh);
+
+    // Mouth band + jitter are env-tunable (the user dials them on-device
+    // since the render can't be seen here; the band also glows so it's
+    // visible where the lip-sync acts). All in normalised-Y units.
+    let envf = |k: &str, d: f32| {
+        std::env::var(k)
+            .ok()
+            .and_then(|v| v.parse::<f32>().ok())
+            .unwrap_or(d)
+    };
+    let mouth_y = envf("LANA_MOUTH_Y", MOUTH_CY);
+    // Thin band, subtle asymmetric jaw drop (was head-splitting at 0.045).
+    let mouth_h = envf("LANA_MOUTH_H", 0.010);
+    let mouth_amp = envf("LANA_MOUTH_AMP", 0.008);
+    // X half-width so only the central mouth cluster reacts, not the slice.
+    let mouth_w = envf("LANA_MOUTH_W", 0.03);
+    // A touch more jitter → organic nebula, less uncanny rigid scan.
+    let jitter = envf("LANA_PT_JITTER", 0.006);
+    // Iris auto-centred on the real eye cluster (see `detect_eyes`);
+    // `LANA_EYE_Y0`/`LANA_EYE_BAND` seed the search, fixed env coords are
+    // the fallback if the cluster isn't found.
+    let eye_y0 = envf("LANA_EYE_Y0", TARGET_H * 0.92);
+    let eye_band = envf("LANA_EYE_BAND", 0.11);
+    let (eye_x, eye_y, eye_z) = detect_eyes(&cloud, eye_y0, eye_band).unwrap_or_else(|| {
+        warn!("avatar: eye cluster not found — using fixed LANA_EYE_X/Y/Z");
+        (
+            envf("LANA_EYE_X", 0.07),
+            envf("LANA_EYE_Y", eye_y0),
+            envf("LANA_EYE_Z", 0.4),
+        )
+    });
+    // Geometric eye = two concentric particle rings: outer ring radius
+    // (LANA_EYE_R) and inner ring radius (LANA_PUPIL_R). Small vs the
+    // ~0.07 inter-eye spacing.
+    let eye_r = envf("LANA_EYE_R", 0.018);
+    let pupil_r = envf("LANA_PUPIL_R", 0.008);
+    // Anti-uncanny: coherent flow drift, animated dissolve, breath+hue.
+    let flow = envf("LANA_FLOW", 0.010);
+    let dissolve = envf("LANA_DISSOLVE", 0.15);
+    let life = envf("LANA_LIFE", 1.0);
+    info!(
+        eye_x,
+        eye_y, eye_z, "avatar: iris centred on eye cluster (3D)"
+    );
+    let mat = materials.add(PointMaterial {
+        p: Vec4::new(0.0, EMISSIVE_K, CULL, mouth_y),
+        q: Vec4::new(mouth_h, mouth_amp, jitter, mouth_w),
+        r: Vec4::new(eye_y, eye_x, eye_r, pupil_r),
+        s: Vec4::new(eye_z, flow, dissolve, life),
+    });
+
+    // Pinned from the user's logged "perfect" pose (orbit-tunable live).
     let cam_dist = std::env::var("LANA_AVATAR_CAM_DIST")
         .ok()
         .and_then(|v| v.parse::<f32>().ok())
         .filter(|d| *d > 0.05)
-        .unwrap_or(max_y * 0.40);
+        .unwrap_or(0.535);
     let cam_y_frac = std::env::var("LANA_AVATAR_CAM_Y")
         .ok()
         .and_then(|v| v.parse::<f32>().ok())
@@ -401,9 +440,8 @@ fn setup(
         dist: cam_dist,
     };
 
-    // `Bloom` requires the HDR pipeline (a required component in Bevy
-    // 0.18); `TonyMcMapface` tames the glow. `orbit_camera` repositions
-    // this camera from `OrbitCam` every frame.
+    // `Bloom` pulls in the HDR pipeline (required component in Bevy 0.18);
+    // `TonyMcMapface` tames the glow.
     commands.spawn((
         Camera3d::default(),
         Tonemapping::TonyMcMapface,
@@ -411,58 +449,26 @@ fn setup(
         Transform::from_translation(orbit.eye())
             .looking_at(Vec3::new(0.0, orbit.target_y, 0.0), Vec3::Y),
     ));
-
-    // Small points so the face doesn't fuse; colour = the vertex normal
-    // (the "vertex-normals" visualiser look) so the relief reads, glowing
-    // via bloom. One emissive material per quantised normal bucket,
-    // built up-front (≤ NORMAL_LEVELS³ ≈ 216 → still auto-instanced).
-    let dot = meshes.add(Mesh::from(Sphere::new(0.0032)));
-    let mut mats: HashMap<[u8; 3], Handle<StandardMaterial>> = HashMap::new();
-    for (_, normal, _) in &cloud {
-        let key = normal_key(*normal);
-        mats.entry(key).or_insert_with(|| {
-            materials.add(StandardMaterial {
-                base_color: Color::BLACK,
-                emissive: key_color(key),
-                ..default()
-            })
-        });
-    }
-
+    commands.spawn((
+        CloudRoot,
+        Mesh3d(mesh),
+        MeshMaterial3d(mat.clone()),
+        Transform::default(),
+        Visibility::default(),
+    ));
     info!(
         points = cloud.len(),
-        materials = mats.len(),
         dist = orbit.dist,
         target_y = orbit.target_y,
         "point-cloud avatar ready (left-drag orbit · wheel zoom · ↑/↓ pan · L logs)"
     );
-    commands
-        .spawn((CloudRoot, Transform::default(), Visibility::default()))
-        .with_children(|root| {
-            for (idx, (home, normal, role)) in cloud.into_iter().enumerate() {
-                let Some(mat) = mats.get(&normal_key(normal)) else {
-                    continue;
-                };
-                root.spawn((
-                    Pt {
-                        home,
-                        normal,
-                        role,
-                        seed: (idx as f32 * 0.618_034).fract(),
-                    },
-                    Mesh3d(dot.clone()),
-                    MeshMaterial3d(mat.clone()),
-                    Transform::from_translation(home),
-                ));
-            }
-        });
-    commands.insert_resource(Bounds { max_y });
     commands.insert_resource(orbit);
+    commands.insert_resource(PointMat(mat));
 }
 
 /// Interactive orbit camera: left-drag orbits, wheel zooms, ↑/↓ pans the
-/// look-at height, `L` logs the current pose so it can be pinned as the
-/// `LANA_AVATAR_CAM_*` defaults.
+/// look-at height, `L` logs the pose to pin as the `LANA_AVATAR_CAM_*`
+/// defaults.
 fn orbit_camera(
     time: Res<Time>,
     mut orbit: ResMut<OrbitCam>,
@@ -472,7 +478,6 @@ fn orbit_camera(
     mut wheel: MessageReader<MouseWheel>,
     mut cam: Query<&mut Transform, With<Camera3d>>,
 ) {
-    // Accumulate input as plain f32 (avoids glam-operator lint / float-eq).
     let (mut dx, mut dy) = (0.0_f32, 0.0_f32);
     if mouse_btn.pressed(MouseButton::Left) {
         for m in motion.read() {
@@ -495,7 +500,6 @@ fn orbit_camera(
         pan -= 1.0;
     }
 
-    // Always apply (zero input → no-op), so no equality tests are needed.
     orbit.yaw -= dx * 0.006;
     orbit.pitch = (orbit.pitch - dy * 0.006).clamp(-1.4, 1.4);
     orbit.dist = (orbit.dist * (-scroll * 0.12).exp()).clamp(0.05, 50.0);
@@ -517,113 +521,23 @@ fn orbit_camera(
     }
 }
 
-/// Pseudo-random next-blink interval (≈2.5–5.5 s, no RNG dep).
-fn blink_interval(t: f32) -> f32 {
-    1.5_f32.mul_add((t * 1.37).sin(), 4.0)
-}
-
-/// Braindance-style animation: a slow turn, a vertical scan sweep that
-/// brightens the band it crosses, per-point flicker/jitter ("imperfect
-/// scan"), the mouth band opening with the viseme schedule, and an
-/// irregular eye blink (procedural fallback only).
-fn animate_cloud(
+/// Feed `openness` into the material uniform (the shader does the mouth
+/// open + scan/flicker), and a faint idle drift on the cloud root.
+fn animate(
     time: Res<Time>,
-    bounds: Option<Res<Bounds>>,
-    orbit: Option<Res<OrbitCam>>,
     mut schedule: ResMut<VisemeSchedule>,
-    mut blink: Local<BlinkClock>,
+    pm: Option<Res<PointMat>>,
+    mut materials: ResMut<Assets<PointMaterial>>,
     mut roots: Query<&mut Transform, With<CloudRoot>>,
-    mut pts: Query<(&Pt, &mut Transform), Without<CloudRoot>>,
 ) {
+    let openness = schedule.openness(Instant::now()).clamp(0.0, 1.0);
+    if let Some(m) = pm.as_ref().and_then(|pm| materials.get_mut(&pm.0)) {
+        m.p.x = openness;
+    }
+
     let t = time.elapsed_secs();
-    let top = bounds.map_or(TARGET_H, |b| b.max_y);
-    // Camera position from the orbit pose (the root barely rotates, so a
-    // point's animated position ≈ its world position).
-    let cam_pos = orbit.as_deref().map(OrbitCam::eye);
-
-    // Root: a very slow drift only — the user orbits the camera, so the
-    // cloud itself stays nearly still for precise inspection. The same
-    // yaw is applied to normals below so the facing shade stays correct.
-    let root_yaw = (t * 0.15).sin() * 0.08;
-    let yaw_q = Quat::from_rotation_y(root_yaw);
     for mut tf in &mut roots {
-        tf.rotation = yaw_q;
-        tf.scale = Vec3::splat((t * 1.4).sin().mul_add(0.006, 1.0));
-    }
-
-    let openness = schedule
-        .current(Instant::now())
-        .map_or(0.0, |(o, _)| o)
-        .clamp(0.0, 1.0);
-
-    // Vertical scan plane sweeping the figure (period ≈ 7.8 s).
-    let scan_y = ((t * 0.8).sin() * 0.5 + 0.5) * top;
-    let scan_band = top * 0.045;
-
-    // Irregular blink envelope (0 → 1 → 0 over BLINK_DUR).
-    if blink.next_at <= 0.0 {
-        blink.next_at = t + blink_interval(t);
-    }
-    if t >= blink.next_at && t >= blink.end_at {
-        blink.end_at = t + BLINK_DUR;
-        blink.next_at = t + BLINK_DUR + blink_interval(t);
-    }
-    let blink_w = if t < blink.end_at {
-        let p = 1.0 - ((blink.end_at - t) / BLINK_DUR).clamp(0.0, 1.0);
-        (p * std::f32::consts::PI).sin()
-    } else {
-        0.0
-    };
-
-    for (pt, mut tf) in &mut pts {
-        let ph = pt.seed * std::f32::consts::TAU;
-        let shimmer = Vec3::new(
-            (t * 1.7 + ph).sin() * 0.004,
-            (t * 1.5 + ph).cos() * 0.004,
-            (t * 1.3 + ph).sin() * 0.004,
-        );
-        let mut p = Vec3::new(
-            pt.home.x + shimmer.x,
-            pt.home.y + shimmer.y,
-            pt.home.z + shimmer.z,
-        );
-        match pt.role {
-            Role::Mouth => {
-                // The lower-head band opens with the spoken `openness`.
-                let spread = (pt.home.y - MOUTH_CY) * (openness * 3.0);
-                p.y += spread;
-            }
-            Role::Eye => {
-                let f = 1.0 - blink_w;
-                p.y = EYE_CY + (pt.home.y - EYE_CY) * f + shimmer.y;
-            }
-            Role::Skull | Role::Bust => {}
-        }
-        tf.translation = p;
-
-        // Scan sweep: points the plane crosses flare brighter (bigger →
-        // more bloom). Flicker: occasional brief dropout ("bad scan").
-        let scan = (1.0 - (pt.home.y - scan_y).abs() / scan_band).clamp(0.0, 1.0);
-        let flick = (t * 19.0 + pt.seed * 53.0).sin();
-        let dim = if flick > 0.93 { 0.12 } else { 1.0 };
-
-        // Normal-based reveal: cull points whose normal faces away from
-        // the camera (no back-of-head bleed → clean shell) and shade the
-        // rest by how squarely they face you, so cheeks/nose/brow model
-        // instead of fusing into a white blob.
-        let nw = yaw_q.mul_vec3(pt.normal);
-        let view = cam_pos.map_or(Vec3::Z, |c| {
-            Vec3::new(c.x - p.x, c.y - p.y, c.z - p.z).normalize_or_zero()
-        });
-        let facing = nw.dot(view);
-        // Cull the back (clean front shell); keep the front fairly *flat*
-        // in brightness so the per-point normal *colour* carries the form
-        // (the vertex-normals look) instead of a white front gradient.
-        let shade = if facing < 0.06 {
-            0.0
-        } else {
-            0.55 + facing * 0.7
-        };
-        tf.scale = Vec3::splat(scan.mul_add(0.4, 1.0) * dim * shade);
+        tf.rotation = Quat::from_rotation_y((t * 0.15).sin() * 0.06);
+        tf.scale = Vec3::splat((t * 1.4).sin().mul_add(0.005, 1.0));
     }
 }
