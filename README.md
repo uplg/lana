@@ -1,8 +1,11 @@
 # Lana
 
 Local-only conversational voice agent. You speak, Lana answers out loud, in
-French (primary) or English, as a 3D avatar in a native window with
-audio-driven lip-sync, idle blink and a portrait framing. Planned next:
+French (primary) or English, as a dark, glowing **point-cloud avatar** in a
+native window — a Cyberpunk-2077-braindance-style "scan hologram": the
+vertices of a 3D model (drop a `.glb`/`.vrm`/`.pcd` in the folder) rendered
+as glowing points with a scan sweep, flicker and audio-driven lip-sync.
+Planned next:
 local tool-calling (Phase 8 — e.g. driving your own home API to switch the
 lights, still 100 % local: just an HTTP call on your network) and
 cross-session memory (Phase 9). See
@@ -21,8 +24,8 @@ for other work while Lana runs (runtime footprint ≈ 2 GB).
 | STT | Parakeet-TDT-0.6B-v3 via `parakeet-rs` (ONNX Runtime / `ort`, CPU EP, pure Rust — **no Swift**) |
 | LLM | Luth-LFM2-1.2B (French-specialised Liquid LFM2) Q8_0 GGUF via `candle` (Metal) |
 | TTS | Kyutai Pocket TTS, native Rust port (vendored `babybirdprd/pocket-tts` on `candle`/Metal), French `french_24l` + real **Estelle** voice |
-| Lip-sync | `lana-viseme`: short-time FFT energy + F1/F2 formants → vowel visemes, smoothed onto the avatar's mouth morphs — VRM via its `blendShapeMaster` a/i/u/e/o presets, glTF via morph-target name |
-| Avatar | Bevy 0.18 — native window, camera/light, idle sway, audio lip-sync. `LANA_AVATAR_PATH`: realistic `.glb`/`.gltf` (e.g. [Avaturn](https://avaturn.me)) or a `.vrm` (`bevy_vrm` 0.3) |
+| Lip-sync | `lana-viseme`: short-time FFT energy + F1/F2 formants → vowel/openness; the mouth-region points spread open with the spoken audio |
+| Avatar | Bevy 0.18 — **braindance point-cloud**: a model's vertices (`.glb`/`.vrm`/`.pcd`, sampled — no skeleton/morphs) as auto-instanced emissive points, HDR+bloom, scan sweep + flicker over a near-black scene. Procedural fallback if no model. `LANA_AVATAR_MODEL` / `LANA_AVATAR_CAM_DIST` |
 | UI | `bevy_egui` 0.39 overlay — phase, rolling transcript, mic-mute toggle |
 | Orchestrator | Tokio state machine: streaming TTS, conversation memory, barge-in |
 
@@ -37,9 +40,9 @@ crates/
 ├── lana-stt            # speech-to-text (Parakeet via parakeet-rs / ort)
 ├── lana-llm            # local LLM (candle + Luth-LFM2 GGUF), streaming, memory
 ├── lana-tts            # text-to-speech (native Pocket TTS), streaming
-├── lana-viseme         # audio-to-viseme analysis (stub)
-├── lana-avatar         # VRM rendering, blendshape control (stub)
-├── lana-ui             # in-app egui overlay (stub)
+├── lana-viseme         # audio→viseme DSP (FFT energy + F1/F2), unit-tested
+├── lana-avatar         # Bevy procedural point-cloud avatar + egui overlay
+├── lana-ui             # in-app egui overlay (stub — lives in lana-avatar)
 ├── lana-orchestrator   # state machine, channels, barge-in
 └── lana-app            # binary: wires everything
 
@@ -65,44 +68,35 @@ first launch and cached** — nothing to fetch by hand, no HF token needed
 (public repos). First run pulls ≈ 1.25 GB (LLM) + ≈ 2.5 GB (STT) + the TTS
 model/voice; subsequent runs are instant from cache. **Zero setup:**
 
-`converse` opens the avatar window, so it needs an avatar model — set
-`LANA_AVATAR_PATH`. For a **realistic human**, export a `.glb` from
-[Avaturn](https://avaturn.me) (realistic, rigged, with ARKit
-blendshapes/visemes — feeds Phase 6 lip-sync). A `.vrm` (stylised, VRoid)
-also works.
+`converse` opens the avatar window. The avatar is the **point-cloud scan**
+of a 3D model: drop a `.glb`/`.vrm`/`.pcd` anywhere in the working
+directory (or set `LANA_AVATAR_MODEL=/path/model.glb`) and its vertices
+become the glowing braindance hologram — only positions are read, no rig
+or materials. If no model is found it falls back to a procedural cloud.
 
 ```sh
 # Full voice loop + avatar window (mic → STT → LLM → TTS → speaker + 3D
-# avatar with a live transcript overlay). Run in release for realtime:
-LANA_AVATAR_PATH=/path/to/avatar.glb cargo run --release --bin lana -- converse
+# point-cloud avatar with a live transcript overlay). Release for realtime:
+cargo run --release --bin lana -- converse
 
-# One-shots (no window, no avatar needed):
+# One-shots (no window):
 cargo run --release --bin lana -- chat                       # text REPL
 cargo run --release --bin lana -- transcribe <in.wav>        # STT
 cargo run --release --bin lana -- synth "Bonjour" out.wav    # TTS
 ```
 
-`LANA_AVATAR_PATH` (required for `converse`): a `.glb`/`.gltf` realistic
-avatar or a `.vrm`. `LANA_AVATAR_ROT_Y` (degrees, default `180`): corrective
-yaw — VRM 0.x faces away from the camera; set `0` (or another value) if your
-model then faces backwards. For a `.vrm`, the camera auto-frames a level
-head-and-shoulders portrait on the head bone (the standard talking-avatar
-shot) so the bind-pose arms fall out of frame — VRM 0.0 ships no idle
-animation and hand-posing the skeleton is not reliable across rigs, so this
-is the deterministic choice. Two knobs (the head-bone-to-crown distance
-varies per model, so tune to taste): `LANA_AVATAR_CAM_DIST` (metres,
-default `1.15`) — raise to pull back / shrink her, lower to come closer;
-`LANA_AVATAR_CAM_HEIGHT` (metres, default `0.08`) — vertical aim above the
-head bone, raise it if the crown is clipped / to drop her down in frame.
-A glTF avatar auto-plays its
-first embedded animation clip if it has one and keeps the default camera.
-The avatar also blinks on an irregular idle timer.
-Lip-sync is automatic from the spoken audio. A `.vrm` is resolved from its
-own `blendShapeMaster` (the VRM spec's a/i/u/e/o presets — deterministic,
-no per-rig guessing); a glTF avatar is resolved by ARKit/VRoid morph-target
-name. Either way, if the mouth can't be resolved the reason is logged (it
-is never a silent failure).
-Optional local overrides (power users): `LANA_MODEL_PATH` /
+`LANA_AVATAR_MODEL` picks the model file (else the first
+`.glb`/`.vrm`/`.pcd` in the folder). It starts face-framed;
+**the camera is an interactive orbit**: left-drag to orbit, mouse wheel to
+zoom, ↑/↓ to pan the look-at height, and **press `L` to log the current
+camera pose** (so you can pin it via `LANA_AVATAR_CAM_DIST` /
+`LANA_AVATAR_CAM_Y`). Points are emissive and **glow via HDR bloom** over a
+near-black scene; the surface facing the camera is scaled up so the form
+reads (depth reveal). The model is normalised to a fixed height; the
+lower-head band opens with the spoken audio, a scan plane sweeps it and
+points flicker (braindance look). Point size / colours / scan-flicker
+intensity are constants in `cloud.rs`. Optional local overrides (power users):
+`LANA_MODEL_PATH` /
 `LANA_TOKENIZER_PATH` (LLM GGUF + tokenizer.json), `LANA_STT_MODEL_DIR`
 (directory of Parakeet ONNX files). Voice override: `LANA_TTS_VOICE_EMBEDDING`
 (Kyutai predefined embedding, path or `hf://…`), `LANA_TTS_VOICE_PROMPT`

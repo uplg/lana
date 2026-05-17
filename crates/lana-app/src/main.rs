@@ -96,13 +96,6 @@ where
 /// async loop) runs on a side thread with its own Tokio runtime, while
 /// Bevy owns the main thread. Conversation state crosses over a channel.
 fn run_converse_windowed() -> Result<()> {
-    let avatar_path = std::env::var("LANA_AVATAR_PATH")
-        .map(PathBuf::from)
-        .context(
-            "LANA_AVATAR_PATH not set (path to a .glb/.gltf realistic avatar — \
-         e.g. exported from avaturn.me — or a .vrm)",
-        )?;
-
     let (av_tx, av_rx) = crossbeam_channel::unbounded::<AvatarUpdate>();
 
     // User-side mic mute, shared between the overlay button (Bevy thread)
@@ -122,7 +115,8 @@ fn run_converse_windowed() -> Result<()> {
 
     // Blocks until the window closes; the process then exits, ending the
     // orchestrator thread with it.
-    lana_avatar::run(avatar_path, av_rx, mute).map_err(|e| anyhow::anyhow!("avatar: {e}"))
+    lana_avatar::run(av_rx, mute);
+    Ok(())
 }
 
 fn init_tracing() {

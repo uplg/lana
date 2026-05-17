@@ -10,9 +10,11 @@ must stay fully usable for other work while Lana runs.
 > voice loop works (`lana converse`), real **Estelle** voice, native
 > streaming TTS, conversation memory (in-RAM), LLM = Luth-LFM2-1.2B.
 > LLM/STT/TTS all auto-download from Hugging Face (zero manual setup).
-> Avatar done: Phase 5 window, Phase 6 lip-sync (VRM via its own
-> blendShapeMaster), Phase 7 portrait framing + idle blink (full-body
-> VRM 0.0 posing intentionally not attempted — framing instead).
+> Avatar: **Cyberpunk-2077-braindance point-cloud** (user's call) — the
+> whole VRM/glTF rig stack (`bevy_vrm`, morphs, posing) was deleted; a
+> model's *vertices* (`.glb`/`.vrm`/`.pcd`, positions only) are sampled and
+> rendered as glowing scanned points (bloom + scan sweep + flicker);
+> lip-sync (`lana-viseme`/`VisemeSchedule`) opens the lower-head band.
 > 100 % Rust stack: no Swift, no Python, no cloud.
 
 ---
@@ -201,24 +203,33 @@ not deterministic — the clean fix is a real idle/retargeted animation, not
 bone math. Reverted to the visible bind pose; `LANA_AVATAR_ARM_DOWN`
 removed (no silent knob). *Not GUI-tested in CI — verified on-device.*
 
-### 🚧 Phase 7 — Presentation polish
-Done: **portrait/bust camera framing** — for a `.vrm`, a one-shot system
-aims the camera at the `Head` bone's *world position* (translation only —
-robust on the mirror-scaled rigs that broke the earlier rotation-based
-pose attempts) for a head-and-shoulders shot, so the unsolved bind-pose
-arms fall out of frame. This is the deliberate, deterministic choice over
-hand-posing an arbitrary VRM 0.0 skeleton (no VRMA in `bevy_vrm` 0.3, no
-humanoid normalization; bone math failed twice for real reasons). Level
-(untilted) shot, tunable via `LANA_AVATAR_CAM_DIST` (1.15 m) and
-`LANA_AVATAR_CAM_HEIGHT` (0.08 m, aim above the head bone); glTF keeps the
-default camera and its embedded idle clip. Done: **idle blink** reusing
-the proven `blendShapeMaster` path (parse the `blink` preset; an irregular
-sine timer drives it crisply, un-smoothed). Done: **user mic-mute toggle**
-— a shared `Arc<AtomicBool>` toggled by an egui overlay button; when set
-the orchestrator discards mic input and resets the segmenter on the mute
-edge so Lana stops listening (and resumes cleanly on unmute). Idle
-sway/breathing retained. Still open: FR/EN voice picker, VRM hot-reload,
-gaze-at-camera. *Not GUI-tested in CI — verified on-device.*
+### ✅ Phase 7 — Avatar pivot: Cyberpunk-braindance point-cloud
+**The VRM/glTF rig stack was scrapped for a point-cloud "scan hologram"**
+(user's idea; reference = CP2077 braindance). Honest finding (SIGGRAPH
+talk + the snowman attempt): the *shape* can't be procedural — it must be
+a real model sampled to points; the *look* is the renderer. So:
+- `glb.rs` — vertex sampler: parses a `.glb`/`.vrm` (binary glTF
+  JSON+BIN, every primitive's FLOAT/VEC3 `POSITION`, honoring
+  bufferView stride) or ASCII `.pcd`; **positions only**, no rig/morphs;
+  graceful `None` → procedural fallback. Subsamples to ~7000.
+- `cloud.rs` — model auto-detected (`LANA_AVATAR_MODEL` or first
+  `.glb`/`.vrm`/`.pcd` in CWD; default = `test_woman.glb` the user
+  dropped at root), normalised (feet y=0, centred, height `TARGET_H`),
+  role-tagged by height band (lower-head band = lip-sync). Rendered as one
+  shared tiny emissive `Sphere` auto-instanced (no WGSL), `Bloom::NATURAL`
+  + `TonyMcMapface`, near-black. **Braindance animation**: slow turn, a
+  vertical **scan-plane sweep** that flares the band it crosses (scale →
+  more bloom), per-point **flicker** dropout ("bad scan"), shimmer; the
+  lip-sync band opens with `VisemeSchedule.openness`. Procedural cloud
+  kept only as the no-model fallback.
+- **Deleted**: `bevy_vrm`, `vrm.rs`, `mouth.rs` morph code, glTF
+  `SceneRoot`, camera-framing, `error.rs`/`AvatarError`. Kept: window,
+  egui overlay, **mic-mute**, `Updates`, `AvatarUpdate`, `lana-viseme`.
+**Honest limits**: mouth/eye localisation on an arbitrary mesh is a
+height-band heuristic (not exact lips); "sexy" quality = the input model;
+not GUI-tested in CI — user is the visual oracle. Knobs: `LANA_AVATAR_MODEL`,
+`LANA_AVATAR_CAM_DIST`; point size/colours/scan-flicker are `cloud.rs`
+consts. Still open: FR/EN voice picker.
 
 ### ⬜ Phase 8 — Tools (function-calling)
 
@@ -344,14 +355,13 @@ For when the avatar work progresses; none blocks the voice loop.
 
 ## 10. Immediate next steps
 
-Recently delivered: **Phase 7 presentation polish** (portrait camera
-framing on the VRM head bone so the bind-pose arms leave frame — the
-deliberate choice over hand-posing; idle blink via `blendShapeMaster`),
-**Phase 6 lip-sync** (pure-DSP `lana-viseme`, wall-clock viseme schedule;
-VRM via its own `blendShapeMaster`, glTF by morph name) — pending
-on-device confirmation the mouth visibly moves,
-**Phase 5 avatar window** (Bevy + glTF/VRM + egui overlay, Bevy on main
-thread; corrective base yaw via `LANA_AVATAR_ROT_Y`, default 180°),
+Recently delivered: **Avatar pivot — Cyberpunk-braindance point-cloud**
+(`glb.rs` samples a model's vertices → `cloud.rs` auto-instanced glowing
+points + bloom + scan-sweep/flicker; VRM/glTF rig stack deleted; lip-sync
+reuses `lana-viseme`/`VisemeSchedule`; auto-detects a `.glb`/`.vrm`/`.pcd`),
+**mic-mute toggle** (egui button → shared flag → orchestrator drops mic),
+**Phase 6 lip-sync** confirmed on-device 2026-05-17,
+**Phase 5 avatar window** (Bevy + egui overlay, Bevy on main thread),
 conversation memory (in-RAM), Estelle voice, default `tu` form,
 **LLM = Luth-LFM2-1.2B**, #143 (comma split), LLM/STT/TTS HF auto-download
 (zero setup). Audio path is the proven Phase-4 whole-sentence
@@ -360,13 +370,11 @@ synth+enqueue (the streaming/jitter-buffer experiment was reverted; TTS
 Photoreal path researched and specified as **Phase 10** (FLAME-rigged
 3DGS) — deferred until the mesh pipeline is complete (user's call).
 
-1. On-device run of `lana converse` (`--release`, `LANA_AVATAR_PATH` =
-   the VRM): confirm the mouth visibly moves while Lana speaks. Expect
-   `lip-sync: VRM blendShapeMaster viseme map loaded a=Some(39)…` then
-   `lip-sync: bound VRM blendShapeMaster visemes to MorphWeights`. If it
-   moves wrong/weak, tune `lana-viseme` thresholds; if not at all, the
-   loader's morph slot order differs from the glTF order (next: parse
-   `targetNames` and match by name instead of trusting slot order).
+1. On-device run of `lana converse` (`--release`, no env needed): judge
+   the point-cloud avatar — does it read as a 3D glowing bust, do the
+   mouth points open with speech, eyes blink? Tune `LANA_AVATAR_CAM_DIST`
+   for zoom; geometry/colors/density are constants in `cloud.rs` to
+   iterate on from the user's visual feedback (the only oracle here).
 2. STT robustness: parakeet-rs (v3 multilingual) has no language lock, so
    heavily FR-accented English can decode as Cyrillic. Consider a
    script-sanity guard (drop/re-listen on a predominantly non-Latin

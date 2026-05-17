@@ -6,7 +6,7 @@ use std::sync::atomic::Ordering;
 use bevy::prelude::*;
 use bevy_egui::{EguiContexts, EguiPlugin, EguiPrimaryContextPass, egui};
 
-use crate::mouth::VisemeSchedule;
+use crate::cloud::VisemeSchedule;
 use crate::{AvatarUpdate, MicMute, Updates};
 
 /// Most recent conversation lines kept for display.
